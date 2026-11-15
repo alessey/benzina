@@ -45,6 +45,8 @@ export class RaceUi {
   private picking = false;
   /** Lobby card minimised to a bar (to warm up unobstructed). */
   private collapsed = false;
+  /** The lobby/results card is showing (not hidden to the bar). */
+  cardOpen = false;
 
   constructor(
     private readonly actions: {
@@ -150,7 +152,8 @@ export class RaceUi {
     else if (v.wrongWay && race.phase === 'racing') banner = '<span class="warn">WRONG WAY</span>';
     this.set(this.banner, banner);
 
-    // Lobby and results card.
+    // Lobby and results card. While it's open, the arrow keys orbit the camera.
+    this.cardOpen = (race.phase === 'lobby' && !this.collapsed) || race.phase === 'results';
     const panelKey = JSON.stringify([
       race.phase,
       v.trackId,

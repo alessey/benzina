@@ -77,6 +77,7 @@ const devHooks = {
   scene,
   camera,
   THREE,
+  CarView,
   session: null as Session | null,
   frames: 0,
   firstFrameAt: 0,
@@ -247,6 +248,25 @@ onSessionChange();
 if (online) {
   online.onTuning = refreshTuning;
   online.onDisconnect = () => setStatus('Disconnected from server. Reload to rejoin.');
+}
+
+/**
+ * Where to put your car while the lobby card is up: the middle of the larger free band above
+ * or below the card, as a fraction of the screen height from the centre (0 if neither fits).
+ */
+const racePanel = document.getElementById('race-panel');
+function freeSpaceShift(): number {
+  // Touch screens: no arrow keys, and the free space is where the pedals are.
+  if (IS_TOUCH_DEVICE) return 0;
+  const card = racePanel?.firstElementChild?.getBoundingClientRect();
+  if (!card) return 0;
+  const h = window.innerHeight;
+  const above = card.top;
+  const below = h - card.bottom;
+  if (Math.max(above, below) < 110) return 0;
+  const y = below >= above ? card.bottom + below / 2 : above / 2;
+  // The camera looks a little above and ahead of the car, so aim slightly high.
+  return Math.max(0, Math.abs(y - h / 2) / h - 0.06) * Math.sign(y - h / 2);
 }
 
 let lastThrottle = 0;
@@ -427,6 +447,11 @@ function frame(now: number): void {
     camera.position.set(x, y, z);
     camera.lookAt(lx, ly, lz);
   } else if (pose) {
+    // On the lobby/results card, the arrow keys orbit the camera around the car.
+    input.arrowsOrbit = raceUi.cardOpen;
+    const orbit = input.orbit();
+    chase.orbit(raceUi.cardOpen, orbit.yaw, orbit.tilt, frameTime);
+    chase.frame(raceUi.cardOpen ? freeSpaceShift() : 0, frameTime);
     chase.update(pose.pos, pose.rot, pose.speed / session.sim.tuning.maxSpeed, frameTime);
     sun.position.set(pose.pos.x + 30, 60, pose.pos.z + 20);
     sun.target.position.copy(pose.pos);

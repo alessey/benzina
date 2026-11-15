@@ -19,6 +19,8 @@ export class InputManager {
   readonly touch = new TouchControls();
   private keys = new Set<string>();
   private resetLatched = false;
+  /** When set, the arrow keys orbit the camera instead of driving (WASD still drives). */
+  arrowsOrbit = false;
   private padResetHeld = false;
 
   constructor() {
@@ -39,10 +41,23 @@ export class InputManager {
     return codes.some((c) => this.keys.has(c));
   }
 
+  /** Camera orbit from the arrow keys (only while `arrowsOrbit`): yaw and tilt, -1..1. */
+  orbit(): { yaw: number; tilt: number } {
+    if (!this.arrowsOrbit) return { yaw: 0, tilt: 0 };
+    return {
+      yaw: (this.down('ArrowRight') ? 1 : 0) - (this.down('ArrowLeft') ? 1 : 0),
+      tilt: (this.down('ArrowUp') ? 1 : 0) - (this.down('ArrowDown') ? 1 : 0),
+    };
+  }
+
   /** Read the controls for one tick. Reset is edge-triggered and consumed here. */
   sample(): CarInput {
-    let throttle = (this.down('KeyW', 'ArrowUp') ? 1 : 0) - (this.down('KeyS', 'ArrowDown') ? 1 : 0);
-    let steer = (this.down('KeyD', 'ArrowRight') ? 1 : 0) - (this.down('KeyA', 'ArrowLeft') ? 1 : 0);
+    const up = this.arrowsOrbit ? this.down('KeyW') : this.down('KeyW', 'ArrowUp');
+    const downKey = this.arrowsOrbit ? this.down('KeyS') : this.down('KeyS', 'ArrowDown');
+    const right = this.arrowsOrbit ? this.down('KeyD') : this.down('KeyD', 'ArrowRight');
+    const left = this.arrowsOrbit ? this.down('KeyA') : this.down('KeyA', 'ArrowLeft');
+    let throttle = (up ? 1 : 0) - (downKey ? 1 : 0);
+    let steer = (right ? 1 : 0) - (left ? 1 : 0);
     let handbrake = this.down('Space');
 
     const strongest = (a: number, b: number) => (Math.abs(b) > Math.abs(a) ? b : a);

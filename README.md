@@ -84,7 +84,7 @@ packages/
     carRenderer.ts  draws all cars, interpolates ticks, smooths corrections
     debugOverlay.ts netcode stats + server "ghost" boxes
     scene.ts        sky, terrain, road/curbs/walls, trees, mountains, start gantry, grandstand
-    carView.ts      procedural low-poly cars (GT, hatch, muscle) with working brake lights
+    carView.ts      procedural cars lofted through cross-sections (60s GT, 80s wedge, muscle, rally hatch)
     effects.ts      skid marks and tyre smoke
     audio.ts        synthesised engines, tyre screech, wind, crashes, beeps (Web Audio)
     chaseCamera.ts  smoothed third-person camera
