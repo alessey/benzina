@@ -56,6 +56,11 @@ export class Predictor {
   private lateStreak = 0;
   private hitchUntilTick = -1;
   private replaying = false;
+  /** Server tick of the green light while a countdown is on, else null. */
+  private freezeUntil: number | null = null;
+  /** Latest snapshot's tick and ack: seq s runs on server tick snapTick - 1 + (s - snapAck). */
+  private snapTick = 0;
+  private snapAck = 0;
   private windowMinLead = Infinity;
   private windowCount = 0;
   private calmWindows = 0;
@@ -79,15 +84,45 @@ export class Predictor {
     if (seconds > 0.05) this.hitchUntilTick = this.tick + HITCH_WINDOW_TICKS;
   }
 
+  /**
+   * The race countdown: every car is held until server tick `startTick` (null = no freeze).
+   * Because each server tick consumes exactly one of our seqs, we know which server tick each
+   * of our inputs will run on, so we predict the freeze (and the green light) exactly.
+   */
+  setFreeze(startTick: number | null): void {
+    this.freezeUntil = startTick;
+  }
+
+  /**
+   * The server tick our displayed present corresponds to (our car is predicted ahead of the
+   * latest snapshot). Race clocks use this so "GO" lines up with when our car can move.
+   * Null until the server has acknowledged an input.
+   */
+  presentServerTick(): number | null {
+    if (this.snapAck === 0) return null;
+    return this.snapTick + (this.nextSeq - 1 - this.snapAck);
+  }
+
+  private frozenAt(seq: number): boolean {
+    if (this.freezeUntil === null || this.snapAck === 0) return false;
+    return this.snapTick - 1 + (seq - this.snapAck) < this.freezeUntil;
+  }
+
   /** Simulate one live tick with a fresh local input. Returns what to send to the server. */
   step(rawInput: CarInput): { seq: number; input: CarInput } {
     const input = quantizeInput(rawInput);
     const seq = this.nextSeq++;
     this.pending.push({ seq, input });
     if (this.pending.length > MAX_PENDING) this.pending.shift();
-    this.sim.step(this.inputsFor(input));
+    this.sim.step(this.inputsFor(input, this.frozenAt(seq)));
     this.tick++;
     return { seq, input };
+  }
+
+  /** Keep the world moving when we have no car (spectating): other cars on their last inputs. */
+  stepWithoutCar(): void {
+    this.sim.step(this.inputsFor(NEUTRAL_INPUT, false));
+    this.tick++;
   }
 
   /** Apply an authoritative snapshot and re-simulate unacknowledged inputs. */
@@ -113,6 +148,8 @@ export class Predictor {
     for (const [id, car] of sim.cars) before.set(id, car.getState());
 
     for (const c of snap.cars) sim.cars.get(String(c.id))!.setState(c.state);
+    this.snapTick = snap.tick;
+    this.snapAck = snap.ack;
     this.syncClock(snap);
     this.pending = this.pending.filter((p) => p.seq > snap.ack);
     // ack 0: the server hasn't consumed any of our inputs yet, so it hasn't mapped our
@@ -121,7 +158,7 @@ export class Predictor {
     const firstReplay = snap.ack > 0 && !this.replaying;
     if (snap.ack > 0) {
       this.replaying = true;
-      for (const p of this.pending) sim.step(this.inputsFor(p.input));
+      for (const p of this.pending) sim.step(this.inputsFor(p.input, this.frozenAt(p.seq)));
     }
 
 
@@ -176,10 +213,11 @@ export class Predictor {
     this.timeScale += (target - this.timeScale) * 0.2;
   }
 
-  private inputsFor(local: CarInput): Map<string, CarInput> {
+  private inputsFor(local: CarInput, frozen: boolean): Map<string, CarInput> {
     const inputs = new Map<string, CarInput>();
     for (const id of this.sim.cars.keys()) {
-      inputs.set(id, id === this.localId ? local : (this.remoteInputs.get(id) ?? NEUTRAL_INPUT));
+      const input = id === this.localId ? local : (this.remoteInputs.get(id) ?? NEUTRAL_INPUT);
+      inputs.set(id, frozen ? NEUTRAL_INPUT : input);
     }
     return inputs;
   }

@@ -269,3 +269,267 @@ body.touch #debug {
     opacity: 0;
   }
 }
+
+/* ---------------------------------------------------------------- race */
+
+#lap .big {
+  font-size: 26px;
+  font-weight: 700;
+}
+#lap .big small {
+  font-size: 15px;
+  opacity: 0.7;
+}
+#lap .lapcount {
+  font-size: 14px;
+  font-weight: 400;
+  margin-left: 8px;
+}
+#standings {
+  position: absolute;
+  top: calc(var(--safe-top) + 112px);
+  left: var(--safe-left);
+  font-size: 13px;
+}
+#standings ol {
+  list-style: none;
+  margin: 0;
+  padding: 6px 8px;
+  background: rgba(0, 0, 0, 0.28);
+  border-radius: 8px;
+  min-width: 170px;
+}
+#standings li {
+  display: flex;
+  gap: 8px;
+  line-height: 1.6;
+}
+#standings li span {
+  width: 1.2em;
+  opacity: 0.7;
+}
+#standings li em {
+  margin-left: auto;
+  font-style: normal;
+  opacity: 0.75;
+}
+#standings li.me {
+  color: #ffd84a;
+}
+#countdown {
+  position: absolute;
+  top: 28%;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: clamp(64px, 18vh, 140px);
+  font-weight: 800;
+  text-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+}
+#countdown .go {
+  color: #6dff8f;
+}
+#banner {
+  position: absolute;
+  top: calc(var(--safe-top) + 30px);
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 6px 14px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.4);
+  font-size: 15px;
+  white-space: nowrap;
+}
+#banner .warn {
+  color: #ff6a5a;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+}
+
+/* Lobby / results card. Sits above the touch controls and takes clicks. */
+#race-panel {
+  position: fixed;
+  top: calc(var(--safe-top) + 30px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 6;
+  width: min(420px, calc(100vw - 32px));
+}
+.card {
+  background: rgba(18, 24, 32, 0.82);
+  border-radius: 12px;
+  padding: 12px 14px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.3);
+  font-size: 14px;
+}
+.card .title {
+  font-weight: 700;
+  margin-bottom: 6px;
+}
+.muted {
+  opacity: 0.65;
+  font-weight: 400;
+}
+.card .players {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+}
+.card .players em {
+  font-style: normal;
+  opacity: 0.6;
+  font-size: 12px;
+}
+.card .actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.card button,
+#start button,
+#start select,
+#start input {
+  font: inherit;
+  color: #fff;
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 8px;
+  padding: 8px 12px;
+  min-height: 40px;
+}
+.card button.primary,
+#start button.primary {
+  background: #e23b2e;
+  border-color: #e23b2e;
+  font-weight: 700;
+}
+.card .laps {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.card .laps button {
+  width: 40px;
+  padding: 0;
+}
+.card table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-bottom: 6px;
+}
+.card td,
+.card th {
+  text-align: left;
+  padding: 3px 4px;
+  font-weight: 400;
+}
+.card th {
+  opacity: 0.6;
+  font-size: 12px;
+}
+.card tr.me td {
+  color: #ffd84a;
+}
+
+/* ---------------------------------------------------------------- start screen */
+
+#start {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  padding: var(--safe-top) var(--safe-right) var(--safe-bottom) var(--safe-left);
+  background: linear-gradient(rgba(10, 20, 30, 0.15), rgba(10, 20, 30, 0.45));
+  overflow-y: auto;
+  user-select: auto;
+  -webkit-user-select: auto;
+  touch-action: auto;
+}
+#start .card {
+  width: min(380px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 18px;
+}
+#start h1 {
+  margin: 0 0 4px;
+  text-align: center;
+  letter-spacing: 0.35em;
+  font-size: 28px;
+}
+#start .invite {
+  margin: 0;
+  text-align: center;
+}
+#start .field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  opacity: 0.9;
+}
+#start .row {
+  display: flex;
+  gap: 8px;
+}
+#start .row > :first-child {
+  flex: 1;
+  min-width: 0;
+}
+#start button.ghost {
+  background: transparent;
+}
+#start .error {
+  margin: 0;
+  color: #ff8a7a;
+  font-size: 13px;
+}
+#start input {
+  font-size: 16px; /* avoids iOS zoom-on-focus */
+}
+body.touch #standings {
+  top: calc(var(--safe-top) + 92px);
+  font-size: 11px;
+}
+body.touch #standings ol {
+  min-width: 130px;
+}
+
+/* Menu up: hide the in-game HUD behind it. */
+body.menu #hud {
+  display: none;
+}
+/* Short screens (phones in landscape): tighten the start card so it fits without scrolling. */
+@media (max-height: 500px) {
+  #start .card {
+    gap: 6px;
+    padding: 10px 14px;
+    width: min(460px, 100%);
+  }
+  #start h1 {
+    font-size: 20px;
+    margin: 0;
+  }
+  #start .invite {
+    font-size: 13px;
+  }
+  #start .field {
+    flex-direction: row;
+    align-items: center;
+    gap: 8px;
+  }
+  #start .field input {
+    flex: 1;
+  }
+  #start button,
+  #start select,
+  #start input {
+    min-height: 34px;
+    padding: 4px 10px;
+  }
+}

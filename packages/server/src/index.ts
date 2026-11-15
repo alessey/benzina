@@ -28,7 +28,9 @@ const wss = new WebSocketServer({ server: http, path: '/ws', maxPayload: 4096 })
 
 wss.on('connection', (ws: WebSocket, req) => {
   const url = new URL(req.url ?? '/', 'http://localhost');
+  // mode: quick (any public lobby) | create (new private room) | join (by code; default if a code is given)
   const code = url.searchParams.get('room');
+  const mode = url.searchParams.get('mode') ?? (code ? 'join' : 'quick');
   const name = url.searchParams.get('name') ?? '';
   const bots = Math.max(0, Math.min(7, Number(url.searchParams.get('bots') ?? 0) || 0));
 
@@ -40,7 +42,12 @@ wss.on('connection', (ws: WebSocket, req) => {
     },
   };
 
-  const room = lobby.findRoom(code, { bots });
+  const room =
+    mode === 'create'
+      ? lobby.createPrivate({ bots })
+      : mode === 'join' && code
+        ? lobby.joinByCode(code, { bots })
+        : lobby.quickPlay({ bots });
   const id = room.join(conn, name);
   if (id === null) {
     ws.send(JSON.stringify({ type: 'error', message: 'Room is full' }));

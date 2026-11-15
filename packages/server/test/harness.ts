@@ -12,6 +12,7 @@ import {
   SimWorld,
   type Car,
   type CarInput,
+  type ClientMessage,
   type ServerMessage,
 } from '@benzina/shared';
 import { Room } from '../src/room';
@@ -76,6 +77,18 @@ export interface Scenario {
   seed?: number;
   /** Clients only run every N ticks (N=2 → 30 fps, 3 → 20 fps), ticking in bursts like a slow device. */
   frameEvery?: number;
+  /** Called every tick before clients run; lets a test send control messages (e.g. start a race). */
+  script?: (now: number, ctl: ScriptControl) => void;
+  /** Stop early when this returns true. */
+  until?: (room: Room) => boolean;
+}
+
+export interface ScriptControl {
+  room: Room;
+  /** Client `index`'s own car in its predicted world (what that player sees), if it has one. */
+  predictedCar(index: number): Car | undefined;
+  /** Send a JSON control message from client `index` (goes through its uplink). */
+  send(index: number, msg: ClientMessage): void;
 }
 
 export function runScenario(sc: Scenario) {
@@ -107,13 +120,25 @@ export function runScenario(sc: Scenario) {
     return best;
   };
 
+  const deliver = (id: number, data: Uint8Array | string) =>
+    typeof data === 'string' ? room.handleText(id, data) : room.handleBinary(id, data);
   const frameEvery = sc.frameEvery ?? 1;
+  const ctl: ScriptControl = {
+    room,
+    predictedCar: (index) => clients[index].predictor.sim.cars.get(String(clients[index].id)),
+    send: (index, msg) => {
+      const c = clients[index];
+      c.outbox.push({ at: c.up(now), data: JSON.stringify(msg) });
+    },
+  };
   for (now = 0; now < sc.ticks; now++) {
+    if (sc.until?.(room)) break;
+    sc.script?.(now, ctl);
     for (const c of clients) {
       // Messages are still delivered to the socket between frames; the client handles them per frame.
       const frame = (now + c.index) % frameEvery === 0;
       if (!frame) {
-        while (c.outbox.length && c.outbox[0].at <= now) room.handleBinary(c.id, c.outbox.shift()!.data as Uint8Array);
+        while (c.outbox.length && c.outbox[0].at <= now) deliver(c.id, c.outbox.shift()!.data);
         continue;
       }
       while (c.inbox.length && c.inbox[0].at <= now) {
@@ -121,6 +146,9 @@ export function runScenario(sc: Scenario) {
         if (typeof data === 'string') {
           const msg = JSON.parse(data) as ServerMessage;
           if (msg.type === 'welcome') Object.assign(c.predictor.sim.tuning, msg.tuning);
+          if (msg.type === 'race' || msg.type === 'welcome') {
+            c.predictor.setFreeze(msg.race.phase === 'countdown' ? msg.race.startTick : null);
+          }
           continue;
         }
         const snap = decodeSnapshot(data)!;
@@ -147,13 +175,14 @@ export function runScenario(sc: Scenario) {
       while (c.clock >= 1) {
         c.clock -= 1;
         const car = c.predictor.sim.cars.get(String(c.id));
-        if (!car) continue;
+        if (!car) {
+          c.predictor.stepWithoutCar();
+          continue;
+        }
         const { seq, input } = c.predictor.step(c.policy(car, c.predictor.tick, c.predictor.sim));
         c.outbox.push({ at: c.up(now), data: encodeInput(seq, input) });
       }
-      while (c.outbox.length && c.outbox[0].at <= now) {
-        room.handleBinary(c.id, c.outbox.shift()!.data as Uint8Array);
-      }
+      while (c.outbox.length && c.outbox[0].at <= now) deliver(c.id, c.outbox.shift()!.data);
     }
     room.tick();
   }

@@ -3,6 +3,7 @@
  * rare control messages (welcome, joins, ping, tuning) are JSON text frames.
  */
 import type { CarTuning } from './config';
+import type { RaceState } from './race';
 import type { CarInput } from './input';
 import type { CarState } from './state';
 
@@ -174,12 +175,39 @@ export interface PlayerInfo {
   bot: boolean;
 }
 
+export interface RaceMessage {
+  type: 'race';
+  race: RaceState;
+  /** Player id who can start races, or null. */
+  hostId: number | null;
+  /** Server tick when this was sent (for estimating lap clocks). */
+  tick: number;
+}
+
 export type ServerMessage =
-  | { type: 'welcome'; id: number; room: string; tuning: CarTuning; players: PlayerInfo[] }
+  | {
+      type: 'welcome';
+      id: number;
+      room: string;
+      /** Private rooms are only reachable by code; public ones also by quick play. */
+      isPublic: boolean;
+      tuning: CarTuning;
+      players: PlayerInfo[];
+      /** Joined mid-race: watching until the next lobby. */
+      spectator: boolean;
+      race: RaceState;
+      hostId: number | null;
+      tick: number;
+    }
   | { type: 'joined'; player: PlayerInfo }
   | { type: 'left'; id: number }
   | { type: 'pong'; t: number }
   | { type: 'tuning'; tuning: CarTuning }
+  | RaceMessage
   | { type: 'error'; message: string };
 
-export type ClientMessage = { type: 'ping'; t: number } | { type: 'tuning'; tuning: Partial<CarTuning> };
+export type ClientMessage =
+  | { type: 'ping'; t: number }
+  | { type: 'tuning'; tuning: Partial<CarTuning> }
+  /** Host only: put everyone on the grid and start a race. */
+  | { type: 'start'; laps: number };

@@ -7,7 +7,9 @@ const SMOOTHING_RATE = 10;
 /** Corrections bigger than this are teleports (resets, respawns): snap, don't glide. */
 const SNAP_DISTANCE = 6;
 
-const COLORS = [0xd8262e, 0x2e6fd8, 0xf2b705, 0x2fa84f, 0x9b3fd1, 0xf27405, 0x1fb5b5, 0xe8e8e8];
+/** Your car is always red; everyone else gets one of the others. */
+const LOCAL_COLOR = 0xd8262e;
+const OTHER_COLORS = [0x2e6fd8, 0xf2b705, 0x2fa84f, 0x9b3fd1, 0xf27405, 0x1fb5b5, 0xe8e8e8, 0xff7ab8];
 
 interface Pose {
   x: number;
@@ -54,8 +56,9 @@ function nameTag(name: string): THREE.Sprite {
   ctx.fillText(name, 128, 33);
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace;
-  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false }));
-  sprite.scale.set(4, 1, 1);
+  // Constant on-screen size: readable far away, not a billboard when a car is right behind the camera.
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false, sizeAttenuation: false }));
+  sprite.scale.set(0.24, 0.06, 1);
   sprite.position.y = 2;
   sprite.renderOrder = 10;
   return sprite;
@@ -83,8 +86,9 @@ export class CarRenderer {
     for (const [id, car] of this.sim.cars) {
       if (this.entries.has(id)) continue;
       const pose = poseOf(car.getState());
-      const view = new CarView(COLORS[Number(id) % COLORS.length]);
-      const tag = id === this.localId() ? null : nameTag(this.nameOf(id));
+      const local = id === this.localId();
+      const view = new CarView(local ? LOCAL_COLOR : OTHER_COLORS[Number(id) % OTHER_COLORS.length]);
+      const tag = local ? null : nameTag(this.nameOf(id));
       if (tag) view.group.add(tag);
       this.scene.add(view.group);
       this.entries.set(id, {

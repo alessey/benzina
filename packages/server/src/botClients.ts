@@ -31,7 +31,7 @@ await initPhysics();
 const track = buildTrack(DEFAULT_TRACK);
 
 function runBot(n: number): void {
-  const params = new URLSearchParams({ name: `HeadlessBot ${n}` });
+  const params = new URLSearchParams({ name: `HeadlessBot ${n}`, mode: room ? 'join' : 'quick' });
   if (room) params.set('room', room);
   const ws = new WebSocket(`${url}?${params}`);
   ws.binaryType = 'arraybuffer';
@@ -42,9 +42,13 @@ function runBot(n: number): void {
   ws.onmessage = (ev) => {
     if (typeof ev.data === 'string') {
       const msg = JSON.parse(ev.data) as ServerMessage;
+      if (msg.type === 'welcome' || msg.type === 'race') {
+        predictor?.setFreeze(msg.race.phase === 'countdown' ? msg.race.startTick : null);
+      }
       if (msg.type === 'welcome') {
         localId = String(msg.id);
         predictor = new Predictor(new SimWorld(track, { ...msg.tuning }), localId);
+        predictor.setFreeze(msg.race.phase === 'countdown' ? msg.race.startTick : null);
         console.log(`bot ${n}: joined room ${msg.room} as car ${msg.id}`);
         let last = performance.now();
         let acc = 0;
@@ -55,7 +59,10 @@ function runBot(n: number): void {
           while (acc >= DT) {
             acc -= DT;
             const car = predictor!.sim.cars.get(localId);
-            if (!car) continue;
+            if (!car) {
+              predictor!.stepWithoutCar(); // spectating until the next lobby
+              continue;
+            }
             const { seq, input } = predictor!.step(botInput(car, track, 0.85 + Math.random() * 0.15));
             ws.send(encodeInput(seq, input));
           }

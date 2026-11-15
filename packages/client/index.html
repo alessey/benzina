@@ -17,11 +17,10 @@
     <div id="hud">
       <div id="room"></div>
       <div id="status" hidden></div>
-      <div id="lap">
-        <div><span class="label">LAP</span> <span id="lap-now">--:--.---</span></div>
-        <div><span class="label">LAST</span> <span id="lap-last">--:--.---</span></div>
-        <div><span class="label">BEST</span> <span id="lap-best">--:--.---</span></div>
-      </div>
+      <div id="lap"></div>
+      <div id="standings" hidden></div>
+      <div id="countdown" hidden></div>
+      <div id="banner" hidden></div>
       <div id="speed"><span id="speed-value">0</span><span class="unit">km/h</span></div>
       <div id="rotate-hint">Rotate your phone for the best view ↻</div>
       <div id="help">
@@ -29,6 +28,7 @@
         Gamepad: RT/LT · left stick · A handbrake · Y reset
       </div>
     </div>
+    <div id="race-panel" hidden></div>
     <button id="fullscreen" hidden aria-label="Fullscreen">⛶</button>
     <div id="loading">Benzina…</div>
     <script type="module" src="/src/main.ts"></script>

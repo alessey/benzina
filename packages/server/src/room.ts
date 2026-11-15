@@ -1,4 +1,5 @@
 import {
+  Race,
   botInput,
   decodeInput,
   encodeSnapshot,
@@ -10,6 +11,7 @@ import {
   type CarTuning,
   type ClientMessage,
   type PlayerInfo,
+  type RaceMessage,
   type ServerMessage,
   type SnapshotCar,
   type Track,
@@ -37,7 +39,10 @@ export interface Connection {
 interface Player {
   info: PlayerInfo;
   conn: Connection;
-  slot: number;
+  /** Grid slot of this player's car, or null while spectating (joined mid-race). */
+  slot: number | null;
+  /** Input actually simulated last tick (neutral during the countdown); sent in snapshots. */
+  appliedInput: CarInput;
   /** Inputs received but not yet simulated, in seq order. */
   queue: { seq: number; input: CarInput }[];
   /** Last input simulated; reused as the guess when an input hasn't arrived in time. */
@@ -65,7 +70,12 @@ export interface RoomOptions {
   bots?: number;
   /** Accept live tuning changes from clients (dev only). */
   allowTuning?: boolean;
+  /** Public rooms are matched by quick play; private ones only by code. */
+  isPublic?: boolean;
 }
+
+/** Broadcast race standings this often while racing (positions change continuously). */
+const RACE_UPDATE_TICKS = 15;
 
 /**
  * One race: an authoritative SimWorld plus the players driving in it.
@@ -73,8 +83,10 @@ export interface RoomOptions {
  */
 export class Room {
   readonly sim: SimWorld;
+  readonly race: Race;
   private readonly players = new Map<number, Player>();
   private readonly bots = new Map<number, Bot>();
+  private hostId: number | null = null;
 
   constructor(
     readonly code: string,
@@ -82,6 +94,7 @@ export class Room {
     private readonly options: RoomOptions = {},
   ) {
     this.sim = new SimWorld(track);
+    this.race = new Race(track);
     for (let i = 0; i < Math.min(options.bots ?? 0, MAX_CARS - 1); i++) this.addBot();
   }
 
@@ -93,6 +106,10 @@ export class Room {
     return this.players.size + this.bots.size;
   }
 
+  get isPublic(): boolean {
+    return this.options.isPublic ?? false;
+  }
+
   /** True if another human can join (bots give up their seat for humans). */
   get hasRoomForHuman(): boolean {
     return this.players.size < MAX_CARS;
@@ -100,16 +117,18 @@ export class Room {
 
   join(conn: Connection, name: string): number | null {
     if (!this.hasRoomForHuman) return null;
-    if (this.carCount >= MAX_CARS) this.removeBot([...this.bots.keys()].pop()!);
+    // Bots give up their seats for humans.
+    if (this.carCount >= MAX_CARS && this.bots.size > 0) this.removeBot([...this.bots.keys()].pop()!);
 
     const id = this.freeId(1);
-    const slot = this.freeSlot();
     const info: PlayerInfo = { id, name: name.slice(0, 20) || `Driver ${id}`, bot: false };
-    this.sim.addCar(String(id), slot);
+    // Mid-race joiners watch until the next lobby; otherwise take a car now.
+    const spectator = this.race.phase !== 'lobby';
     this.players.set(id, {
       info,
       conn,
-      slot,
+      slot: null,
+      appliedInput: NEUTRAL_INPUT,
       queue: [],
       lastInput: NEUTRAL_INPUT,
       nextSeq: null,
@@ -119,13 +138,20 @@ export class Room {
       missedInputs: 0,
       guessStreak: 0,
     });
+    if (!spectator) this.giveCar(this.players.get(id)!);
+    this.hostId ??= id;
 
     this.sendTo(conn, {
       type: 'welcome',
       id,
       room: this.code,
+      isPublic: this.isPublic,
       tuning: this.sim.tuning,
       players: this.allPlayers(),
+      spectator,
+      race: this.race.state(),
+      hostId: this.hostId,
+      tick: this.sim.tick,
     });
     this.broadcast({ type: 'joined', player: info }, id);
     return id;
@@ -133,14 +159,34 @@ export class Room {
 
   leave(id: number): void {
     if (!this.players.delete(id)) return;
+    this.race.retire(String(id));
     this.sim.removeCar(String(id));
+    if (this.hostId === id) {
+      // Host passes to whoever has been here longest.
+      this.hostId = this.players.keys().next().value ?? null;
+      this.broadcastRace();
+    }
     this.broadcast({ type: 'left', id });
+  }
+
+  /** Give a player a car on a free grid slot (making room by dropping a bot if needed). */
+  private giveCar(p: Player): void {
+    if (p.slot !== null) return;
+    if (this.sim.cars.size >= MAX_CARS && this.bots.size > 0) this.removeBot([...this.bots.keys()].pop()!);
+    p.slot = this.freeSlot();
+    this.sim.addCar(String(p.info.id), p.slot);
+    // A fresh car means a fresh input stream.
+    p.queue = [];
+    p.nextSeq = null;
+    p.lastSeqReceived = 0;
+    p.ack = 0;
+    p.lastInput = NEUTRAL_INPUT;
   }
 
   handleBinary(id: number, data: Uint8Array): void {
     const player = this.players.get(id);
     const msg = decodeInput(data);
-    if (!player || !msg || msg.seq <= player.lastSeqReceived) return;
+    if (!player || player.slot === null || !msg || msg.seq <= player.lastSeqReceived) return;
     player.lastSeqReceived = msg.seq;
     player.queue.push(msg);
   }
@@ -158,26 +204,61 @@ export class Room {
       this.sendTo(player.conn, { type: 'pong', t: msg.t });
     } else if (msg.type === 'tuning' && this.options.allowTuning) {
       this.applyTuning(msg.tuning);
+    } else if (msg.type === 'start' && id === this.hostId) {
+      this.startRace(Number(msg.laps) || 3);
     }
+  }
+
+  /** Host pressed start: everyone with a car lines up (humans by arrival, then bots). */
+  startRace(laps: number): void {
+    if (this.race.phase !== 'lobby' && this.race.phase !== 'results') return;
+    for (const p of this.players.values()) this.giveCar(p);
+    const ids = [
+      ...[...this.players.values()].map((p) => String(p.info.id)),
+      ...[...this.bots.values()].map((b) => String(b.info.id)),
+    ];
+    this.race.start(this.sim, ids, this.sim.tick, laps);
+    this.broadcastRace();
   }
 
   /** Advance one fixed simulation tick, and send snapshots on snapshot ticks. */
   tick(): void {
     const inputs = new Map<string, CarInput>();
+    // During the countdown everyone is held on the grid. Inputs are still consumed (one seq per
+    // tick keeps client timelines aligned); they just don't drive anything. Clients apply the
+    // same rule to their predictions.
+    const frozen = this.race.isFrozen(this.sim.tick);
 
     for (const p of this.players.values()) {
-      inputs.set(String(p.info.id), this.consumeInput(p));
+      if (p.slot === null) continue;
+      const input = this.consumeInput(p);
+      p.appliedInput = frozen ? NEUTRAL_INPUT : input;
+      inputs.set(String(p.info.id), p.appliedInput);
     }
 
     for (const b of this.bots.values()) {
       const car = this.sim.cars.get(String(b.info.id))!;
-      b.lastInput = botInput(car, this.sim.track, 0.9);
+      b.lastInput = frozen ? NEUTRAL_INPUT : botInput(car, this.sim.track, 0.9);
       inputs.set(String(b.info.id), b.lastInput);
     }
 
     this.sim.step(inputs);
 
+    const phaseBefore = this.race.phase;
+    const changed = this.race.update(this.sim, this.sim.tick);
+    if (phaseBefore !== 'lobby' && this.race.phase === 'lobby') {
+      // Back to the lobby: spectators get their cars.
+      for (const p of this.players.values()) this.giveCar(p);
+    }
+    const live = this.race.phase === 'countdown' || this.race.phase === 'racing';
+    if (changed || (live && this.sim.tick % RACE_UPDATE_TICKS === 0)) this.broadcastRace();
+
     if (this.sim.tick % SERVER_TICKS_PER_SNAPSHOT === 0) this.sendSnapshots();
+  }
+
+  private broadcastRace(): void {
+    const msg: RaceMessage = { type: 'race', race: this.race.state(), hostId: this.hostId, tick: this.sim.tick };
+    this.broadcast(msg);
   }
 
   dispose(): void {
@@ -223,13 +304,19 @@ export class Room {
   private sendSnapshots(): void {
     const cars: SnapshotCar[] = [];
     for (const p of this.players.values()) {
-      cars.push({ id: p.info.id, state: this.sim.cars.get(String(p.info.id))!.getState(), input: p.lastInput });
+      const car = this.sim.cars.get(String(p.info.id));
+      if (car) cars.push({ id: p.info.id, state: car.getState(), input: p.appliedInput });
     }
     for (const b of this.bots.values()) {
       cars.push({ id: b.info.id, state: this.sim.cars.get(String(b.info.id))!.getState(), input: b.lastInput });
     }
     const encoded = encodeSnapshot(this.sim.tick, cars);
     for (const p of this.players.values()) {
+      if (p.slot === null) {
+        // Spectators get the world, but there's no input stream to report on.
+        p.conn.send(withSnapshotHeader(encoded, 0, 0));
+        continue;
+      }
       // Positive: inputs queued ahead. Negative: inputs are arriving this many ticks late.
       const lead = p.nextSeq === null ? 0 : p.lastSeqReceived - p.ack;
       p.conn.send(withSnapshotHeader(encoded, p.ack, lead));
@@ -254,6 +341,7 @@ export class Room {
 
   private removeBot(id: number): void {
     this.bots.delete(id);
+    this.race.retire(String(id));
     this.sim.removeCar(String(id));
     this.broadcast({ type: 'left', id });
   }
@@ -269,7 +357,7 @@ export class Room {
   }
 
   private freeSlot(): number {
-    const used = new Set([...this.players.values(), ...this.bots.values()].map((p) => p.slot));
+    const used = new Set([...this.players.values(), ...this.bots.values()].map((p) => p.slot).filter((s) => s !== null));
     let slot = 0;
     while (used.has(slot)) slot++;
     return slot;

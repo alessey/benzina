@@ -17,27 +17,40 @@ export class Lobby {
 
   constructor(private readonly defaults: RoomOptions = {}) {}
 
+  /** Join a room by code. Unknown codes create a private room, so invite links never dead-end. */
+  joinByCode(code: string, options: RoomOptions = {}): Room {
+    const key = code.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8) || randomCode();
+    return this.rooms.get(key) ?? this.create(key, { ...options, isPublic: false });
+  }
+
+  /** A new private room with a fresh code. */
+  createPrivate(options: RoomOptions = {}): Room {
+    return this.create(this.freshCode(), { ...options, isPublic: false });
+  }
+
   /**
-   * Join a specific room by code (created on demand), or quick-play into the first room
-   * with space.
+   * Quick play: a public room waiting in its lobby, else any public room with space
+   * (you'll spectate until the race ends), else a new public room.
    */
-  findRoom(code: string | null, options: RoomOptions = {}): Room {
-    const opts = { ...this.defaults, ...options };
-    if (code) {
-      const key = code.toUpperCase().slice(0, 8);
-      let room = this.rooms.get(key);
-      if (!room) {
-        room = new Room(key, this.track, opts);
-        this.rooms.set(key, room);
-      }
-      return room;
-    }
-    for (const room of this.rooms.values()) if (room.hasRoomForHuman) return room;
+  quickPlay(options: RoomOptions = {}): Room {
+    const open = [...this.rooms.values()].filter((r) => r.isPublic && r.hasRoomForHuman);
+    return (
+      open.find((r) => r.race.phase === 'lobby') ??
+      open[0] ??
+      this.create(this.freshCode(), { ...options, isPublic: true })
+    );
+  }
+
+  private create(code: string, options: RoomOptions): Room {
+    const room = new Room(code, this.track, { ...this.defaults, ...options });
+    this.rooms.set(code, room);
+    return room;
+  }
+
+  private freshCode(): string {
     let key = randomCode();
     while (this.rooms.has(key)) key = randomCode();
-    const room = new Room(key, this.track, opts);
-    this.rooms.set(key, room);
-    return room;
+    return key;
   }
 
   /** Call after a player leaves; empty rooms are discarded. */

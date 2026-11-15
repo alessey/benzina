@@ -16,6 +16,8 @@ export interface NetConditions {
 }
 
 export interface ConnectOptions {
+  /** quick: any open public lobby · create: new private room · join: by code. */
+  mode: 'quick' | 'create' | 'join';
   room: string | null;
   name: string;
   bots: number;
@@ -82,7 +84,7 @@ export class Connection {
 
   /** Connect and wait for the server's welcome. */
   static open(opts: ConnectOptions): Promise<{ conn: Connection; welcome: Extract<ServerMessage, { type: 'welcome' }> }> {
-    const params = new URLSearchParams({ name: opts.name });
+    const params = new URLSearchParams({ name: opts.name, mode: opts.mode });
     if (opts.room) params.set('room', opts.room);
     if (opts.bots) params.set('bots', String(opts.bots));
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';

@@ -14,20 +14,30 @@ npm run typecheck
 npm run bots -- --room ABCD --count 3   # headless bot clients join a room over the network
 ```
 
-Open http://localhost:5173 and you're dropped into a room; the URL gains `?room=CODE`, so share it to
-invite others. Vite listens on your LAN, so a phone on the same Wi-Fi can open the "Network" URL it prints.
-The client always talks to `/ws` on its own origin; in dev, Vite proxies that to the game server.
+Open http://localhost:5173. The start screen asks for your name. It offers:
+- **Quick race:** joins an open public lobby, or creates one.
+- **Create private room:** with 0–7 bots.
+- **Join with a code.**
+- **Practice offline** against bots.
+
+In a room you warm up in free practice. The host (first to arrive; passes on if they leave)
+picks the lap count and presses **Start race**: everyone lines up on the grid, a 3-2-1
+countdown runs, and positions, laps and times show live. Then a results table, and back to the
+lobby after 12 s. **Invite friends** shares the room link (native share sheet on phones). People
+who join mid-race spectate the leader until the next lobby.
+
+Vite listens on your LAN, so a phone on the same Wi-Fi can open the "Network" URL it prints. The
+client always talks to `/ws` on its own origin; in dev, Vite proxies that to the game server.
 
 URL options:
 
 | Option | Effect |
 |---|---|
-| `?room=CODE` | join or create a specific room (otherwise quick-play) |
-| `?name=NAME` | driver name |
-| `?bots=N` | server-side bots when creating a room |
-| `?offline` | single player, no server |
+| `?room=CODE` | invite link: pre-fills the code on the start screen |
+| `?offline&bots=N` | skip the menu: offline practice/race against N bots |
+| `?autojoin` (+`room`, `name`, `bots`) | skip the menu and join (used by automated tests) |
 | `?bot` | autopilot drives your car |
-| `?debug` | show the netcode overlay (toggle with <code>`</code> or F3) |
+| `?debug` | show the netcode overlay (toggle with <code>`</code> or F3), and the tuning panel on phones |
 | `?lag=MS&jitter=MS&loss=PCT` | simulate a bad network (round-trip lag; loss = TCP-style stalls) |
 
 Controls: W/↑ throttle · S/↓ brake/reverse · A/D or ←/→ steer · Space handbrake · R reset.
@@ -55,15 +65,18 @@ packages/
     state.ts    CarState snapshot
     protocol.ts binary input/snapshot codecs, JSON control messages, input quantization
     predictor.ts client prediction + reconciliation (no rendering, no sockets)
+    race.ts     race rules: countdown, checkpoints, laps, standings, results (server + offline)
     bot.ts      autopilot, used by tests, server bots and headless bot clients
   server/   Node game server
     index.ts       HTTP + WebSocket entry point (/ws, /health)
-    lobby.ts       rooms by code, quick-play, single fixed-rate tick loop
-    room.ts        one race: authoritative SimWorld, per-player input queues, snapshots
+    lobby.ts       public/private rooms, quick play, join by code, single fixed-rate tick loop
+    room.ts        one room: authoritative SimWorld + Race, host, spectators, input queues, snapshots
     botClients.ts  headless network bots (npm run bots)
   client/   Vite + Three.js browser game
     main.ts         frame loop: poll snapshot → fixed ticks → render
-    session.ts      OfflineSession / OnlineSession behind one interface
+    session.ts      OfflineSession / OnlineSession behind one interface (incl. race state)
+    startScreen.ts  name, quick race / create / join / offline
+    raceUi.ts       lobby card, countdown, standings, results, banners
     net/            WebSocket connection, network condition simulator, stats
     carRenderer.ts  draws all cars, interpolates ticks, smooths corrections
     debugOverlay.ts netcode stats + server "ghost" boxes
@@ -74,7 +87,7 @@ packages/
     touchControls.ts on-screen steering zone and pedals (pointer events, multi-touch)
     device.ts       fullscreen/landscape lock, wake lock, blocking browser gestures
     quality.ts      adaptive render resolution (detects frame-rate caps)
-    lapTimer.ts     local lap timing (server will own this later)
+    lapTimer.ts     free-practice lap timer (races are timed by the server)
 ```
 
 ## Design notes
@@ -130,6 +143,10 @@ packages/
   `upset` fades once the tyres grip again, and stability returns as the car slows, so spun cars
   always recover. Your own handbrake turns and cornering never set `upset`, so they handle exactly
   as before.
+- **Predicted countdown.** During the countdown the server holds every car (inputs are still
+  consumed, one seq per tick). The client knows which server tick each of its inputs runs on
+  (`snapshot.tick - 1 + seq - ack`), so it predicts the freeze and the green light exactly. No
+  creeping off the grid (0.8 m without this at 200 ms RTT), and GO lines up with when your car moves.
 - **Cheap physics.** Each wall side is one triangle-mesh collider (4x cheaper per step than hundreds
   of boxes): a step with 8 cars is ~0.05 ms on desktop, which matters because clients re-simulate
   ~10–20 ticks per snapshot, and phones are several times slower.
@@ -146,6 +163,7 @@ packages/
 2. ✅ Server runs `SimWorld`; client prediction + reconciliation; rooms; debug overlay; bots
    - ✅ Mobile: touch controls, phone layouts, adaptive quality, backgrounded-tab recovery
 3. ✅ Car-to-car collisions: arcade bump layer, collision netcode harness, time-sync hardening
-4. Race flow: lobby → countdown → race → results; checkpoints, positions, room codes
+4. ✅ Race flow: start screen, public/private rooms, lobby → countdown → race → results, checkpoints,
+   positions, host, spectators, offline races vs bots
 5. Art, sound, more tracks
 6. Accounts, leaderboards, multiple regions
