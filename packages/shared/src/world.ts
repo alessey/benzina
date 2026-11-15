@@ -2,8 +2,7 @@ import { RAPIER } from './physics';
 import { Car } from './car';
 import { DEFAULT_TUNING, DT, type CarTuning } from './config';
 import { NEUTRAL_INPUT, type CarInput } from './input';
-import { yawQuat } from './state';
-import { gridSlot, type Track } from './track';
+import { gridSlot, type Track, type Vec2 } from './track';
 
 const GROUND_HALF_SIZE = 2000;
 
@@ -30,12 +29,18 @@ export class SimWorld {
         .setFriction(0),
     );
 
-    const { wallHeight, wallThickness } = track.def;
-    for (const w of track.walls) {
+    // One triangle-mesh collider per side, standing on the road edge. Hundreds of separate
+    // box colliders cost ~4x more per step, which matters because clients re-simulate
+    // many ticks per snapshot (and phones are slow).
+    for (const [edge, facing] of [
+      [track.leftEdge, 1],
+      [track.rightEdge, -1],
+    ] as const) {
       this.world.createCollider(
-        RAPIER.ColliderDesc.cuboid(wallThickness / 2, wallHeight / 2, w.length / 2)
-          .setTranslation(w.x, wallHeight / 2, w.z)
-          .setRotation(yawQuat(w.yaw))
+        RAPIER.ColliderDesc.trimesh(
+          ...wallMesh(edge, track.def.wallHeight, facing),
+          RAPIER.TriMeshFlags.FIX_INTERNAL_EDGES,
+        )
           .setFriction(0)
           .setRestitution(0.3),
       );
@@ -75,4 +80,23 @@ export class SimWorld {
   free(): void {
     this.world.free();
   }
+}
+
+/**
+ * A vertical ribbon along a closed edge loop, from the ground up to `height`. Triangles must
+ * face the road: with internal-edge fixing, Rapier treats them as one-sided. With the
+ * default winding, normals point to the right of the driving direction; `facing = -1` flips them.
+ */
+function wallMesh(edge: Vec2[], height: number, facing: 1 | -1): [Float32Array, Uint32Array] {
+  const n = edge.length;
+  const vertices = new Float32Array(n * 6);
+  const indices = new Uint32Array(n * 6);
+  edge.forEach((p, i) => vertices.set([p.x, 0, p.z, p.x, height, p.z], i * 6));
+  for (let i = 0; i < n; i++) {
+    const a = i * 2;
+    const b = ((i + 1) % n) * 2;
+    if (facing === 1) indices.set([a, b, a + 1, a + 1, b, b + 1], i * 6);
+    else indices.set([a, a + 1, b, a + 1, b + 1, b], i * 6);
+  }
+  return [vertices, indices];
 }

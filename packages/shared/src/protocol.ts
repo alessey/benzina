@@ -79,12 +79,15 @@ export interface Snapshot {
   tick: number;
   /** Seq of the last input from the receiving client that the server has consumed. */
   ack: number;
-  /** How many of the receiving client's inputs are queued on the server (for time sync). */
-  buffered: number;
+  /**
+   * How far ahead of the server's need the receiving client's inputs are arriving, in ticks:
+   * the number queued when positive, how late they are when negative. Drives client time sync.
+   */
+  lead: number;
   cars: SnapshotCar[];
 }
 
-// Header: type u8, tick u32, ack u32, buffered u8, count u8.
+// Header: type u8, tick u32, ack u32, lead i8, count u8.
 const SNAP_HEADER = 11;
 // Per car: id u8, p 3×f64, q (y, w) 2×f64, v 3×f64, w.y f64, steer f64, input 3B.
 // Rotations are yaw-only (roll/pitch locked), so q.x and q.z are always zero.
@@ -117,11 +120,11 @@ export function encodeSnapshot(tick: number, cars: SnapshotCar[]): Uint8Array {
 }
 
 /** Stamp the per-recipient fields into a copy of an encoded snapshot. */
-export function withSnapshotHeader(encoded: Uint8Array, ack: number, buffered: number): Uint8Array {
+export function withSnapshotHeader(encoded: Uint8Array, ack: number, lead: number): Uint8Array {
   const buf = encoded.slice();
   const view = new DataView(buf.buffer);
   view.setUint32(5, ack);
-  view.setUint8(9, Math.min(buffered, 255));
+  view.setInt8(9, Math.max(-128, Math.min(127, Math.round(lead))));
   return buf;
 }
 
@@ -156,7 +159,7 @@ export function decodeSnapshot(buf: Uint8Array): Snapshot | null {
   return {
     tick: view.getUint32(1),
     ack: view.getUint32(5),
-    buffered: view.getUint8(9),
+    lead: view.getInt8(9),
     cars,
   };
 }

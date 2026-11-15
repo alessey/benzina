@@ -4,7 +4,9 @@ import { createScene } from './scene';
 import { CarRenderer } from './carRenderer';
 import { ChaseCamera } from './chaseCamera';
 import { DebugOverlay } from './debugOverlay';
-import { InputManager } from './input';
+import { enterFullscreenLandscape, fullscreenSupported, keepScreenAwake, preventBrowserGestures } from './device';
+import { InputManager, IS_TOUCH_DEVICE } from './input';
+import { AdaptiveResolution } from './quality';
 import { formatTime, LapTimer } from './lapTimer';
 import { Connection } from './net/connection';
 import { OfflineSession, OnlineSession, type Session } from './session';
@@ -39,7 +41,11 @@ function setStatus(text: string): void {
 
 await initPhysics();
 const track = buildTrack(DEFAULT_TRACK);
-const { renderer, scene, camera, sun } = createScene(track);
+const { renderer, scene, camera, sun } = createScene(track, { mobile: IS_TOUCH_DEVICE });
+// Render at most 2x (phones report 3x); drop as low as 0.75x on slow phones.
+const quality = new AdaptiveResolution(renderer, IS_TOUCH_DEVICE ? 0.75 : 1, Math.min(window.devicePixelRatio, 2));
+preventBrowserGestures();
+keepScreenAwake();
 if (import.meta.env.DEV) Object.assign(window, { __benzina: { scene, camera, track, THREE } });
 
 let session: Session;
@@ -72,7 +78,15 @@ hud.loading.remove();
 const refreshTuning = createTuningPanel(session.sim.tuning, {
   persist: !online,
   onChange: online ? (t) => online!.sendTuning(t) : undefined,
+  hidden: IS_TOUCH_DEVICE && !params.has('debug'),
 });
+
+if (IS_TOUCH_DEVICE && fullscreenSupported()) {
+  const btn = document.getElementById('fullscreen')!;
+  btn.hidden = false;
+  btn.addEventListener('click', () => void enterFullscreenLandscape());
+  document.addEventListener('fullscreenchange', () => (btn.hidden = !!document.fullscreenElement));
+}
 
 const cars = new CarRenderer(
   scene,
@@ -115,6 +129,7 @@ function frame(now: number): void {
   const frameTime = Math.min((now - lastTime) / 1000, MAX_FRAME_TIME);
   lastTime = now;
   fps += (1 / Math.max(frameTime, 1e-3) - fps) * 0.05;
+  quality.update(frameTime);
 
   // 1. Apply the newest server snapshot (re-simulates pending inputs).
   const corrections = session.poll();
@@ -157,7 +172,8 @@ function frame(now: number): void {
     room: online?.room,
     players: session.players.size,
     stats: online?.conn.stats,
-    serverBuffered: online?.lastSnapshot?.buffered,
+    serverLead: online?.lastSnapshot?.lead,
+    targetLead: online?.predictor.targetLead,
     timeScale: session.timeScale,
     pending: online?.predictor.pendingCount,
     fps,

@@ -3,8 +3,17 @@ import { quantizeInput, type Snapshot } from './protocol';
 import type { CarState } from './state';
 import type { SimWorld } from './world';
 
-/** Ideal number of our inputs waiting in the server's queue when it ticks. */
-const TARGET_BUFFER = 2;
+/** Bounds for how many of our inputs we try to keep queued on the server. */
+const MIN_TARGET_LEAD = 2;
+const MAX_TARGET_LEAD = 8;
+/** Snapshots per adaptation window (~1 s at 30 Hz). */
+const LEAD_WINDOW = 30;
+/**
+ * Skip our sequence numbers forward only when persistently late (a backgrounded tab, a
+ * dead link), not during a brief stall, which clears up by itself once data flows again.
+ */
+const SKIP_IF_LATER_THAN = 30;
+const SKIP_AFTER_LATE_SNAPSHOTS = 10;
 /** Cap on unacknowledged inputs (2 s). Beyond this the server is clearly not keeping up. */
 const MAX_PENDING = 120;
 
@@ -30,7 +39,15 @@ export class Predictor {
   tick = 0;
   /** Multiplier on the client tick rate, nudged so our inputs reach the server just in time. */
   timeScale = 1;
+  /** How many inputs ahead of the server we aim to be; grows on jittery links. */
+  targetLead = MIN_TARGET_LEAD;
   private nextSeq = 1;
+  /** After skipping ahead, ignore "late" reports until the server reaches this seq. */
+  private skipSettlesAt = 0;
+  private lateStreak = 0;
+  private windowMinLead = Infinity;
+  private windowCount = 0;
+  private calmWindows = 0;
   private pending: { seq: number; input: CarInput }[] = [];
   private readonly remoteInputs = new Map<string, CarInput>();
 
@@ -80,16 +97,46 @@ export class Predictor {
     this.pending = this.pending.filter((p) => p.seq > snap.ack);
     for (const p of this.pending) sim.step(this.inputsFor(p.input));
 
-    // Nudge the client clock: too few inputs queued on the server → run faster, too many → slower.
-    const error = TARGET_BUFFER - snap.buffered;
-    const target = 1 + Math.max(-0.05, Math.min(0.05, error * 0.02));
-    this.timeScale += (target - this.timeScale) * 0.2;
+    this.syncClock(snap);
 
     const corrections: Correction[] = [];
     for (const [id, car] of sim.cars) {
       corrections.push({ id, before: before.get(id) ?? car.getState(), after: car.getState() });
     }
     return corrections;
+  }
+
+  /**
+   * Keep our inputs arriving just before the server needs them.
+   *  - Far behind (backgrounded tab, long stall): jump our sequence numbers forward.
+   *  - Slightly off: run the client clock up to 5% fast or slow.
+   *  - Jittery link (inputs keep arriving late): aim for a bigger lead.
+   */
+  private syncClock(snap: Snapshot): void {
+    this.lateStreak = snap.lead < 0 ? this.lateStreak + 1 : 0;
+    const persistentlyLate = snap.lead < -SKIP_IF_LATER_THAN || this.lateStreak >= SKIP_AFTER_LATE_SNAPSHOTS;
+    if (persistentlyLate && snap.ack >= this.skipSettlesAt) {
+      this.nextSeq += -snap.lead + this.targetLead;
+      this.skipSettlesAt = this.nextSeq;
+      this.lateStreak = 0;
+    }
+
+    this.windowMinLead = Math.min(this.windowMinLead, snap.lead);
+    if (++this.windowCount >= LEAD_WINDOW) {
+      if (this.windowMinLead < 1) {
+        this.targetLead = Math.min(MAX_TARGET_LEAD, this.targetLead + 1);
+        this.calmWindows = 0;
+      } else if (this.windowMinLead > this.targetLead + 1 && ++this.calmWindows >= 3) {
+        this.targetLead = Math.max(MIN_TARGET_LEAD, this.targetLead - 1);
+        this.calmWindows = 0;
+      }
+      this.windowMinLead = Infinity;
+      this.windowCount = 0;
+    }
+
+    const error = this.targetLead - snap.lead;
+    const target = 1 + Math.max(-0.05, Math.min(0.05, error * 0.02));
+    this.timeScale += (target - this.timeScale) * 0.2;
   }
 
   private inputsFor(local: CarInput): Map<string, CarInput> {

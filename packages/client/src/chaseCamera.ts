@@ -5,6 +5,16 @@ const HEIGHT = 3.4;
 const LOOK_AHEAD = 4;
 const BASE_FOV = 65;
 const SPEED_FOV = 15;
+/** Keep at least this much horizontal view, so portrait phones aren't looking through a slit. */
+const MIN_HORIZONTAL_FOV = 75;
+const MAX_FOV = 100;
+
+/** Vertical FOV (degrees) for the current aspect ratio. */
+function baseFov(aspect: number): number {
+  const rad = THREE.MathUtils.degToRad;
+  const needed = THREE.MathUtils.radToDeg(2 * Math.atan(Math.tan(rad(MIN_HORIZONTAL_FOV) / 2) / aspect));
+  return Math.min(MAX_FOV, Math.max(BASE_FOV, needed));
+}
 
 /** Third-person camera that trails the car with exponential smoothing. */
 export class ChaseCamera {
@@ -15,9 +25,16 @@ export class ChaseCamera {
   constructor(private readonly camera: THREE.PerspectiveCamera) {}
 
   update(carPos: THREE.Vector3, carRot: THREE.Quaternion, speedRatio: number, dt: number): void {
+    // On tall (portrait) screens, raise the camera and tilt it down so the road fills the
+    // frame instead of the sky. 0 = landscape, 1 = phone portrait.
+    const portrait = THREE.MathUtils.clamp((1.2 - this.camera.aspect) / 0.7, 0, 1);
+    const height = HEIGHT + portrait * 5;
+    const distance = DISTANCE + portrait * 2;
+    const lookAhead = LOOK_AHEAD - portrait * 3;
+
     const forward = new THREE.Vector3(0, 0, 1).applyQuaternion(carRot).setY(0).normalize();
-    const desired = carPos.clone().addScaledVector(forward, -DISTANCE).setY(carPos.y + HEIGHT);
-    const look = carPos.clone().addScaledVector(forward, LOOK_AHEAD).setY(carPos.y + 1);
+    const desired = carPos.clone().addScaledVector(forward, -distance).setY(carPos.y + height);
+    const look = carPos.clone().addScaledVector(forward, lookAhead).setY(carPos.y + 1 - portrait);
 
     if (!this.initialised) {
       this.pos.copy(desired);
@@ -29,7 +46,7 @@ export class ChaseCamera {
 
     this.camera.position.copy(this.pos);
     this.camera.lookAt(this.target);
-    const fov = BASE_FOV + SPEED_FOV * Math.min(Math.abs(speedRatio), 1);
+    const fov = Math.min(MAX_FOV + 10, baseFov(this.camera.aspect) + SPEED_FOV * Math.min(Math.abs(speedRatio), 1));
     if (Math.abs(this.camera.fov - fov) > 0.01) {
       this.camera.fov = THREE.MathUtils.lerp(this.camera.fov, fov, 1 - Math.exp(-4 * dt));
       this.camera.updateProjectionMatrix();

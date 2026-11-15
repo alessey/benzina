@@ -2,7 +2,14 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover"
+    />
+    <meta name="theme-color" content="#9cc7e8" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <title>Benzina</title>
     <link rel="stylesheet" href="/src/style.css" />
   </head>
@@ -16,11 +23,13 @@
         <div><span class="label">BEST</span> <span id="lap-best">--:--.---</span></div>
       </div>
       <div id="speed"><span id="speed-value">0</span><span class="unit">km/h</span></div>
+      <div id="rotate-hint">Rotate your phone for the best view ↻</div>
       <div id="help">
         W/↑ throttle · S/↓ brake/reverse · A D/← → steer · Space handbrake · R reset · ` debug<br />
         Gamepad: RT/LT · left stick · A handbrake · Y reset
       </div>
     </div>
+    <button id="fullscreen" hidden aria-label="Fullscreen">⛶</button>
     <div id="loading">Benzina…</div>
     <script type="module" src="/src/main.ts"></script>
   </body>

@@ -25,9 +25,15 @@ function asLayer<T extends THREE.Mesh>(mesh: T, layer: number): T {
   return mesh;
 }
 
-export function createScene(track: Track): GameScene {
-  const renderer = new THREE.WebGLRenderer({ antialias: true });
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+export interface SceneOptions {
+  /** Phones/tablets: cheaper settings (MSAA off on dense screens, smaller shadow map). */
+  mobile: boolean;
+}
+
+export function createScene(track: Track, opts: SceneOptions): GameScene {
+  // Dense phone screens don't need MSAA, and it's expensive on mobile GPUs.
+  const antialias = !opts.mobile || window.devicePixelRatio < 2;
+  const renderer = new THREE.WebGLRenderer({ antialias, powerPreference: 'high-performance' });
   renderer.setSize(window.innerWidth, window.innerHeight);
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFShadowMap;
@@ -41,16 +47,20 @@ export function createScene(track: Track): GameScene {
   // A near plane of 0.5 m (the camera never gets closer to anything) keeps depth precision
   // high enough that flat road layers don't z-fight with the ground in the distance.
   const camera = new THREE.PerspectiveCamera(65, window.innerWidth / window.innerHeight, 0.5, 1500);
-  window.addEventListener('resize', () => {
+  const resize = () => {
     camera.aspect = window.innerWidth / window.innerHeight;
     camera.updateProjectionMatrix();
     renderer.setSize(window.innerWidth, window.innerHeight);
-  });
+  };
+  window.addEventListener('resize', resize);
+  // Mobile browsers sometimes report the old size during the resize event after rotating.
+  screen.orientation?.addEventListener('change', () => setTimeout(resize, 150));
 
   scene.add(new THREE.HemisphereLight(0xdff1ff, 0x5a7a3a, 1.4));
   const sun = new THREE.DirectionalLight(0xfff4e0, 2.2);
   sun.castShadow = true;
-  sun.shadow.mapSize.set(2048, 2048);
+  const shadowSize = opts.mobile ? 1024 : 2048;
+  sun.shadow.mapSize.set(shadowSize, shadowSize);
   const sc = sun.shadow.camera;
   sc.left = -60;
   sc.right = 60;

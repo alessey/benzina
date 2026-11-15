@@ -7,7 +7,8 @@ export interface DebugInfo {
   room?: string;
   players: number;
   stats?: NetStats;
-  serverBuffered?: number;
+  serverLead?: number;
+  targetLead?: number;
   timeScale: number;
   pending?: number;
   fps: number;
@@ -111,7 +112,7 @@ export class DebugOverlay {
         `snapshots  ${s.snapshotsPerSec.toFixed(1)} /s`,
         `down       ${(s.bytesInPerSec / 1024).toFixed(1)} KB/s`,
         `up         ${(s.bytesOutPerSec / 1024).toFixed(1)} KB/s`,
-        `srv buffer ${info.serverBuffered ?? '-'} inputs`,
+        `input lead ${info.serverLead ?? '-'} (target ${info.targetLead ?? '-'}) ticks`,
         `pending    ${info.pending ?? '-'} inputs`,
         `timescale  ${info.timeScale.toFixed(3)}`,
         `correct.   local ${(this.shownLocal * 100).toFixed(1)} cm  remote ${(this.shownRemote * 100).toFixed(1)} cm`,

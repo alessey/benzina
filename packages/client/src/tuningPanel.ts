@@ -29,6 +29,8 @@ export interface TuningPanelOptions {
   persist: boolean;
   /** Called after any change (online: forward to the server). */
   onChange?: (tuning: CarTuning) => void;
+  /** Start hidden (phones: it would cover the touch controls). */
+  hidden?: boolean;
 }
 
 /** Dev panel for live handling tweaks. Returns a function that refreshes the displayed values. */
@@ -44,6 +46,7 @@ export function createTuningPanel(tuning: CarTuning, opts: TuningPanelOptions): 
 
   const gui = new GUI({ title: opts.persist ? 'Handling (dev)' : 'Handling (dev, shared with room)' });
   gui.close();
+  if (opts.hidden) gui.hide();
   const changed = () => {
     if (opts.persist) {
       try {

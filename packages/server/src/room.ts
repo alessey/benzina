@@ -22,6 +22,12 @@ export const MAX_CARS = 8;
  */
 const MAX_QUEUED_INPUTS = 30;
 const FIRST_BOT_ID = 100;
+/**
+ * Repeat a silent player's last input for at most this many ticks (500 ms), then coast.
+ * Long enough to ride out a TCP stall, short enough that a backgrounded tab with the
+ * throttle held doesn't drive into a wall forever.
+ */
+const MAX_GUESSED_TICKS = 30;
 
 /** Anything that can deliver a frame to one client. A WebSocket in production, a stub in tests. */
 export interface Connection {
@@ -45,6 +51,8 @@ interface Player {
   resetPending: boolean;
   /** Ticks simulated with a guessed input because the real one was late (diagnostic). */
   missedInputs: number;
+  /** Consecutive guessed ticks. */
+  guessStreak: number;
 }
 
 interface Bot {
@@ -109,6 +117,7 @@ export class Room {
       lastSeqReceived: 0,
       resetPending: false,
       missedInputs: 0,
+      guessStreak: 0,
     });
 
     this.sendTo(conn, {
@@ -196,9 +205,10 @@ export class Room {
     let input: CarInput;
     if (p.queue.length && p.queue[0].seq === p.nextSeq) {
       input = p.queue.shift()!.input;
+      p.guessStreak = 0;
     } else {
-      input = { ...p.lastInput, reset: false };
       p.missedInputs++;
+      input = ++p.guessStreak > MAX_GUESSED_TICKS ? NEUTRAL_INPUT : { ...p.lastInput, reset: false };
     }
     if (p.resetPending) {
       input = { ...input, reset: true };
@@ -220,7 +230,9 @@ export class Room {
     }
     const encoded = encodeSnapshot(this.sim.tick, cars);
     for (const p of this.players.values()) {
-      p.conn.send(withSnapshotHeader(encoded, p.ack, p.queue.length));
+      // Positive: inputs queued ahead. Negative: inputs are arriving this many ticks late.
+      const lead = p.nextSeq === null ? 0 : p.lastSeqReceived - p.ack;
+      p.conn.send(withSnapshotHeader(encoded, p.ack, lead));
     }
   }
 

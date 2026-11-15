@@ -36,6 +36,8 @@ interface SimOptions {
   stallChance?: number;
   /** Stall length in ticks. */
   stallTicks?: number;
+  /** Freeze the client (backgrounded tab: no ticks, no message processing) for this window. */
+  pause?: { at: number; ticks: number };
 }
 
 /** Deterministic PRNG so failures are reproducible. */
@@ -84,6 +86,13 @@ function simulate(opts: SimOptions) {
   const remoteErrors: number[] = [];
 
   for (now = 0; now < opts.ticks; now++) {
+    const paused = opts.pause && now >= opts.pause.at && now < opts.pause.at + opts.pause.ticks;
+    if (paused) {
+      deliverToServer();
+      room.tick();
+      continue;
+    }
+
     // Client receives.
     while (toClient.length && toClient[0].at <= now) {
       const { data } = toClient.shift()!;
@@ -114,15 +123,20 @@ function simulate(opts: SimOptions) {
       toServer.push({ at: upLink(now), data: encodeInput(seq, input) });
     }
 
-    // Server receives and ticks.
-    while (toServer.length && toServer[0].at <= now) {
-      room.handleBinary(id, toServer.shift()!.data as Uint8Array);
-    }
+    deliverToServer();
     room.tick();
   }
 
+  function deliverToServer() {
+    while (toServer.length && toServer[0].at <= now) {
+      room.handleBinary(id!, toServer.shift()!.data as Uint8Array);
+    }
+  }
+
   const serverCar = room.sim.cars.get(localId)!;
+  const player = (room as unknown as { players: Map<number, { guessStreak: number; missedInputs: number }> }).players.get(id)!;
   const stats = {
+    guessStreak: player.guessStreak,
     maxLocal: Math.max(0, ...localErrors),
     p95Local: percentile(localErrors, 0.95),
     meanLocal: localErrors.reduce((a, b) => a + b, 0) / Math.max(1, localErrors.length),
@@ -153,7 +167,16 @@ describe('netcode (in-process)', () => {
     expect(s.pending).toBeLessThan(40);
     // Most snapshots need no visible correction; stalls cost only guessed-input error.
     expect(s.p95Local).toBeLessThan(0.05);
-    expect(s.maxLocal).toBeLessThan(0.5);
+    // Worst case is a stall while scraping a wall: a guessed input changes the contact outcome.
+    expect(s.maxLocal).toBeLessThan(1);
+  });
+
+  it('recovers after the client is frozen for 5 s (backgrounded tab)', () => {
+    const s = simulate({ ticks: 60 * 15, latency: 6, bots: 0, pause: { at: 60 * 5, ticks: 60 * 5 } });
+    // Back in sync: the server is using real inputs again and the car is driving.
+    expect(s.guessStreak).toBe(0);
+    expect(s.pending).toBeLessThan(40);
+    expect(s.serverSpeed).toBeGreaterThan(15);
   });
 
   it('stays stable with bots sharing the track', () => {

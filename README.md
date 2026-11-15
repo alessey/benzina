@@ -31,7 +31,13 @@ URL options:
 | `?lag=MS&jitter=MS&loss=PCT` | simulate a bad network (round-trip lag; loss = TCP-style stalls) |
 
 Controls: W/↑ throttle · S/↓ brake/reverse · A/D or ←/→ steer · Space handbrake · R reset.
-A standard gamepad works too (RT/LT, left stick, A handbrake, Y reset). Touch controls are next.
+A standard gamepad works too (RT/LT, left stick, A handbrake, Y reset).
+
+**Phones and tablets:** drag anywhere on the left half to steer (analog; the pill appears under your
+thumb), GAS / BRAKE / DRIFT on the right, ↺ resets. Landscape is best; portrait works with a raised
+camera. On Android the ⛶ button goes fullscreen and locks landscape. iPhone Safari can't do either;
+"Add to Home Screen" gives a full-screen app instead. The screen is kept awake while playing, and
+render resolution adapts to the device's speed.
 
 The **Handling (dev)** panel, top right, tweaks car tuning live. Offline, values persist in
 localStorage; online, changes apply to everyone in the room (dev server only).
@@ -64,7 +70,10 @@ packages/
     scene.ts        lights, road/curb/wall/tree meshes generated from the track
     carView.ts      low-poly car mesh
     chaseCamera.ts  smoothed third-person camera
-    input.ts        keyboard + gamepad → CarInput
+    input.ts        keyboard + gamepad + touch → CarInput
+    touchControls.ts on-screen steering zone and pedals (pointer events, multi-touch)
+    device.ts       fullscreen/landscape lock, wake lock, blocking browser gestures
+    quality.ts      adaptive render resolution (detects frame-rate caps)
     lapTimer.ts     local lap timing (server will own this later)
 ```
 
@@ -93,7 +102,16 @@ packages/
   forward-predicts them to the present, so collisions happen where cars actually are.
 - **Time sync.** Snapshots report how many of your inputs the server has queued; the client runs its
   clock up to ±5% fast or slow to keep about 2 queued, just ahead of when they're needed.
+- **Time sync, continued.** The snapshot's signed `lead` goes negative when inputs arrive too late.
+  If that persists (a backgrounded tab, a dead link), the client skips its sequence numbers forward
+  to catch up. A brief stall is left alone because it clears by itself. The target lead adapts
+  (2–8 ticks) to jittery links such as mobile data.
+- **Silent players coast.** The server repeats a missing player's last input for at most 500 ms, then
+  applies neutral controls, so a locked phone doesn't leave a car driving into a wall.
 - **Smoothing.** Corrections become a visual offset that decays over ~100 ms; teleports (>6 m) snap.
+- **Cheap physics.** Each wall side is one triangle-mesh collider (4x cheaper per step than hundreds
+  of boxes): a step with 8 cars is ~0.05 ms on desktop, which matters because clients re-simulate
+  ~10–20 ticks per snapshot, and phones are several times slower.
 - Tested in-process (`packages/server/test/netcode.test.ts`): real Room + Predictor over a fake link
   with latency and TCP-style stalls.
 
@@ -101,7 +119,7 @@ packages/
 
 1. ✅ Local arcade car on a test track, tuning panel, lap timer
 2. ✅ Server runs `SimWorld`; client prediction + reconciliation; rooms; debug overlay; bots
-   - Next: mobile pass (touch controls, performance, layout); mobile is required for v1
+   - ✅ Mobile: touch controls, phone layouts, adaptive quality, backgrounded-tab recovery
 3. Car-to-car collisions: tune bump response and remote-car prediction (forward prediction is in place)
 4. Race flow: lobby → countdown → race → results; checkpoints, positions, room codes
 5. Art, sound, more tracks
