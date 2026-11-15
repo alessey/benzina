@@ -2,7 +2,8 @@
 
 Multiplayer arcade racing in the browser (desktop and mobile). Three.js for rendering, Rapier
 (deterministic WASM build) for physics, and a Node + `ws` server that runs the same simulation
-authoritatively while clients predict.
+authoritatively while clients predict. Three circuits (one flat, two hilly with banked corners),
+procedural low-poly art, and synthesised sound. No asset files.
 
 ## Running
 
@@ -21,7 +22,7 @@ Open http://localhost:5173. The start screen asks for your name. It offers:
 - **Practice offline** against bots.
 
 In a room you warm up in free practice. The host (first to arrive; passes on if they leave)
-picks the lap count and presses **Start race**: everyone lines up on the grid, a 3-2-1
+picks the track and lap count and presses **Start race**: everyone lines up on the grid, a 3-2-1
 countdown runs, and positions, laps and times show live. Then a results table, and back to the
 lobby after 12 s. **Invite friends** shares the room link (native share sheet on phones). People
 who join mid-race spectate the leader until the next lobby.
@@ -35,12 +36,13 @@ URL options:
 |---|---|
 | `?room=CODE` | invite link: pre-fills the code on the start screen |
 | `?offline&bots=N` | skip the menu: offline practice/race against N bots |
+| `?track=ID` | track for offline play and the menu backdrop (`circuito`, `colline`, `serpente`) |
 | `?autojoin` (+`room`, `name`, `bots`) | skip the menu and join (used by automated tests) |
 | `?bot` | autopilot drives your car |
 | `?debug` | show the netcode overlay (toggle with <code>`</code> or F3), and the tuning panel on phones |
 | `?lag=MS&jitter=MS&loss=PCT` | simulate a bad network (round-trip lag; loss = TCP-style stalls) |
 
-Controls: W/↑ throttle · S/↓ brake/reverse · A/D or ←/→ steer · Space handbrake · R reset.
+Controls: W/↑ throttle · S/↓ brake/reverse · A/D or ←/→ steer · Space handbrake · R reset · M mute.
 A standard gamepad works too (RT/LT, left stick, A handbrake, Y reset).
 
 **Phones and tablets:** drag anywhere on the left half to steer (analog; the pill appears under your
@@ -59,7 +61,8 @@ packages/
   shared/   Simulation used by both client and server. No rendering, no DOM.
     config.ts   tick rate (60 Hz) and arcade tuning parameters
     input.ts    CarInput, the per-tick controls (this is what clients will send)
-    track.ts    tracks from a closed spline → centre line, edges, wall segments
+    track.ts    tracks from a closed spline with heights → centre line, slope, banking, edges, walls
+    tracks.ts   the circuits (Circuito Uno, Colline, Il Serpente)
     car.ts      arcade car controller (one rigid body, roll/pitch locked)
     world.ts    SimWorld: physics world + track + cars, fixed-step `step(inputs)`
     state.ts    CarState snapshot
@@ -80,8 +83,10 @@ packages/
     net/            WebSocket connection, network condition simulator, stats
     carRenderer.ts  draws all cars, interpolates ticks, smooths corrections
     debugOverlay.ts netcode stats + server "ghost" boxes
-    scene.ts        lights, road/curb/wall/tree meshes generated from the track
-    carView.ts      low-poly car mesh
+    scene.ts        sky, terrain, road/curbs/walls, trees, mountains, start gantry, grandstand
+    carView.ts      procedural low-poly cars (GT, hatch, muscle) with working brake lights
+    effects.ts      skid marks and tyre smoke
+    audio.ts        synthesised engines, tyre screech, wind, crashes, beeps (Web Audio)
     chaseCamera.ts  smoothed third-person camera
     input.ts        keyboard + gamepad + touch → CarInput
     touchControls.ts on-screen steering zone and pedals (pointer events, multi-touch)
@@ -100,6 +105,13 @@ packages/
   resting on the ground goes through Rapier's contact solver, whose internal state can't be restored
   from a snapshot, and that alone produced 35 cm prediction errors. The spring depends only on
   position and velocity, so re-simulation reproduces the server exactly (sub-millimetre, tested).
+- **Hills.** The road is a static triangle-mesh collider following the track's heights and
+  automatic banking. Cars stay level in physics (roll/pitch locked, so there's no extra networked
+  state and nothing to tip over) and hover 0.3 m up, which clears ~15% grades and ~10° banks.
+  Slope still matters: gravity along the road slows climbs and speeds descents. The hover damper
+  works relative to the road's rise under the car, so the car follows hills without lag. Cars
+  tilt to the road visually only. Physics walls reach above the visible ones and are measured
+  from the road centre, so a level car can't slide over the low side of a banked corner.
 - **Fixed 60 Hz tick** on both sides; rendering interpolates between ticks.
 
 ### Netcode
@@ -165,5 +177,5 @@ packages/
 3. ✅ Car-to-car collisions: arcade bump layer, collision netcode harness, time-sync hardening
 4. ✅ Race flow: start screen, public/private rooms, lobby → countdown → race → results, checkpoints,
    positions, host, spectators, offline races vs bots
-5. Art, sound, more tracks
+5. ✅ Hills and banking, three tracks with host selection, procedural art, effects, synthesised sound
 6. Accounts, leaderboards, multiple regions

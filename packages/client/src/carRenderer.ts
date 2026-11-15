@@ -1,6 +1,6 @@
 import * as THREE from 'three';
-import { yawOf, type CarState, type Correction, type SimWorld } from '@benzina/shared';
-import { CarView } from './carView';
+import { nearestSampleIndexNear, rightOf, yawOf, type CarState, type Correction, type SimWorld, type Track } from '@benzina/shared';
+import { BODY_STYLES, CarView } from './carView';
 
 /** How quickly visual correction offsets fade out (1/s). */
 const SMOOTHING_RATE = 10;
@@ -25,10 +25,16 @@ interface Entry {
   curr: Pose;
   speed: number;
   steer: number;
+  /** 0..1 how hard the car slowed last tick (brake lights). */
+  braking: number;
   /** Visual offset left over from corrections; decays to zero. */
   offset: Pose;
   /** Created this frame: skip correction smoothing. */
   fresh: boolean;
+  /** Visual pitch and roll following the road (physics keeps cars level). */
+  pitch: number;
+  roll: number;
+  sampleHint: number;
 }
 
 function poseOf(s: CarState): Pose {
@@ -72,11 +78,12 @@ export class CarRenderer {
   private readonly entries = new Map<string, Entry>();
   private readonly tmpPos = new THREE.Vector3();
   private readonly tmpRot = new THREE.Quaternion();
-  private readonly up = new THREE.Vector3(0, 1, 0);
+  private readonly tmpEuler = new THREE.Euler(0, 0, 0, 'YXZ');
 
   constructor(
     private readonly scene: THREE.Scene,
     private readonly sim: SimWorld,
+    private readonly track: Track,
     private readonly nameOf: (id: string) => string,
     private readonly localId: () => string | null,
   ) {}
@@ -87,7 +94,11 @@ export class CarRenderer {
       if (this.entries.has(id)) continue;
       const pose = poseOf(car.getState());
       const local = id === this.localId();
-      const view = new CarView(local ? LOCAL_COLOR : OTHER_COLORS[Number(id) % OTHER_COLORS.length]);
+      const n = Number(id) || 0;
+      const view = new CarView(
+        local ? LOCAL_COLOR : OTHER_COLORS[n % OTHER_COLORS.length],
+        local ? 'gt' : BODY_STYLES[(n * 7 + 1) % BODY_STYLES.length],
+      );
       const tag = local ? null : nameTag(this.nameOf(id));
       if (tag) view.group.add(tag);
       this.scene.add(view.group);
@@ -98,8 +109,12 @@ export class CarRenderer {
         curr: { ...pose },
         speed: 0,
         steer: 0,
+        braking: 0,
         offset: { x: 0, y: 0, z: 0, yaw: 0 },
         fresh: true,
+        pitch: 0,
+        roll: 0,
+        sampleHint: 0,
       });
     }
     for (const [id, e] of this.entries) {
@@ -116,7 +131,11 @@ export class CarRenderer {
       if (!car) continue;
       e.prev = e.curr;
       e.curr = poseOf(car.getState());
-      e.speed = car.forwardSpeed();
+      const speed = car.forwardSpeed();
+      // Slowing by more than ~coasting (4 m/s²) while moving forward lights the brake lamps.
+      const decel = (Math.abs(e.speed) - Math.abs(speed)) * 60;
+      e.braking = Math.abs(speed) > 1 && decel > 6 ? Math.min(1, decel / 30) : 0;
+      e.speed = speed;
       e.steer = car.steer;
     }
   }
@@ -154,8 +173,11 @@ export class CarRenderer {
     for (const e of this.entries.values()) e.fresh = false;
   }
 
-  /** Draw all cars at `alpha` (0..1) between the previous and current tick. */
-  render(alpha: number, dt: number): void {
+  /**
+   * Draw all cars at `alpha` (0..1) between the previous and current tick. Cars close to the
+   * camera (but not the one it follows) fade out so they don't block the view.
+   */
+  render(alpha: number, dt: number, camera?: THREE.Camera, followed?: string | null): void {
     const decay = Math.exp(-SMOOTHING_RATE * dt);
     for (const e of this.entries.values()) {
       e.fresh = false;
@@ -170,9 +192,44 @@ export class CarRenderer {
         e.prev.z + (e.curr.z - e.prev.z) * alpha + o.z,
       );
       const yaw = e.prev.yaw + wrapAngle(e.curr.yaw - e.prev.yaw) * alpha + o.yaw;
-      this.tmpRot.setFromAxisAngle(this.up, yaw);
-      e.view.update(this.tmpPos, this.tmpRot, e.speed, e.steer, dt);
+      this.tiltToRoad(e, yaw, dt);
+      this.tmpEuler.set(e.pitch, yaw, e.roll);
+      this.tmpRot.setFromEuler(this.tmpEuler);
+      e.view.update(this.tmpPos, this.tmpRot, e.speed, e.steer, dt, e.braking);
+      if (camera) {
+        const d = camera.position.distanceTo(this.tmpPos);
+        const followedHere = [...this.entries].find(([, x]) => x === e)?.[0] === followed;
+        e.view.setFade(followedHere ? 1 : THREE.MathUtils.clamp((d - 3) / 6, 0.25, 1));
+      }
     }
+  }
+
+  /**
+   * Physics keeps cars level; visually they follow the road's slope and banking. The road's
+   * height gradient under the car gives pitch (along the car) and roll (across it).
+   */
+  private tiltToRoad(e: Entry, yaw: number, dt: number): void {
+    e.sampleHint = nearestSampleIndexNear(this.track, this.tmpPos.x, this.tmpPos.z, e.sampleHint);
+    const s = this.track.samples[e.sampleHint];
+    const r = rightOf(s.tx, s.tz);
+    // Height gradient: climbs along the tangent, falls toward the right edge when banked.
+    const gx = s.slope * s.tx - Math.tan(s.bank) * r.x;
+    const gz = s.slope * s.tz - Math.tan(s.bank) * r.z;
+    const fx = Math.sin(yaw);
+    const fz = Math.cos(yaw);
+    // Rotation about the car's +X tips the nose down, so climbing is negative pitch;
+    // rotation about +Z lifts the car's left side (+X is left), i.e. the side the road rises to.
+    const pitch = -Math.atan(gx * fx + gz * fz);
+    const roll = Math.atan(gx * fz - gz * fx);
+    const k = 1 - Math.exp(-10 * dt);
+    e.pitch += (pitch - e.pitch) * k;
+    e.roll += (roll - e.roll) * k;
+  }
+
+  /** Remove every car view (before the renderer is replaced). */
+  dispose(): void {
+    for (const e of this.entries.values()) this.scene.remove(e.view.group);
+    this.entries.clear();
   }
 
   /** The rendered pose of a car (for the camera), or null. */

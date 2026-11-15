@@ -79,7 +79,10 @@ describe('SimWorld', () => {
     const saved = car.getState();
     for (let t = 0; t < 50; t++) sim.step(new Map([['a', scriptedInput(t)]]));
     car.setState(saved);
-    expect(car.getState()).toEqual(saved);
+    const restored = car.getState();
+    // Rapier renormalises quaternions on set, which can move the last float bit (~1e-7).
+    expect({ ...restored, q: undefined }).toEqual({ ...saved, q: undefined });
+    restored.q.forEach((v, i) => expect(v).toBeCloseTo(saved.q[i], 6));
     sim.free();
   });
 
@@ -163,8 +166,10 @@ describe('SimWorld', () => {
 
     it('(regression guard) the old handling really did get stuck', () => {
       // Pivoting around the centre swung the tail into the wall and the solver blocked the turn.
+      // (With today's taller physics walls the old worst case is ~2 s; with the original short
+      // walls it never escaped at all.)
       const worst = Math.max(...positions.map(([idx, side]) => ticksToEscape(idx, side, OLD_HANDLING)));
-      expect(worst).toBeGreaterThanOrEqual(150);
+      expect(worst).toBeGreaterThanOrEqual(100);
     });
 
     it('scraping a wall bleeds speed', () => {

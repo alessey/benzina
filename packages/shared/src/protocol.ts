@@ -198,7 +198,10 @@ export type ServerMessage =
       race: RaceState;
       hostId: number | null;
       tick: number;
+      trackId: string;
     }
+  /** The host picked another track: rebuild the world. Sent before the next snapshot. */
+  | { type: 'track'; trackId: string }
   | { type: 'joined'; player: PlayerInfo }
   | { type: 'left'; id: number }
   | { type: 'pong'; t: number }
@@ -210,4 +213,6 @@ export type ClientMessage =
   | { type: 'ping'; t: number }
   | { type: 'tuning'; tuning: Partial<CarTuning> }
   /** Host only: put everyone on the grid and start a race. */
-  | { type: 'start'; laps: number };
+  | { type: 'start'; laps: number }
+  /** Host only, between races: switch track. */
+  | { type: 'track'; trackId: string };

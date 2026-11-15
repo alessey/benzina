@@ -2,7 +2,7 @@ import { RAPIER } from './physics';
 import { CAR_RIDE_HEIGHT, CAR_SHAPE, SUSPENSION_TRAVEL, type CarTuning } from './config';
 import type { CarInput } from './input';
 import { type CarState, yawOf, yawQuat } from './state';
-import { nearestSampleIndex, nearestSampleIndexNear, rightOf, type Track } from './track';
+import { nearestSampleIndex, nearestSampleIndexNear, rightOf, roadHeightAt, type Track } from './track';
 
 const FALL_RESET_Y = -10;
 /** Below this speed (m/s) yaw stability returns in full, so spins always wind down. */
@@ -64,11 +64,12 @@ export class Car {
     private readonly track: Track,
     readonly id: string,
     x: number,
+    y: number,
     z: number,
     yaw: number,
   ) {
     const bodyDesc = RAPIER.RigidBodyDesc.dynamic()
-      .setTranslation(x, CAR_RIDE_HEIGHT, z)
+      .setTranslation(x, y + CAR_RIDE_HEIGHT, z)
       .setRotation(yawQuat(yaw))
       .enabledRotations(false, true, false)
       .setCcdEnabled(true)
@@ -97,7 +98,7 @@ export class Car {
 
   applyControls(input: CarInput, t: CarTuning, dt: number): void {
     const pos = this.body.translation();
-    if (input.reset || pos.y < FALL_RESET_Y) {
+    if (input.reset || pos.y < FALL_RESET_Y || this.belowRoad(pos.x, pos.y, pos.z)) {
       this.resetToTrack();
       return;
     }
@@ -129,10 +130,15 @@ export class Car {
     let yawRate = w.y;
 
     if (hit) {
-      // Hover spring. Rapier applies gravity during the step, so add it back here:
-      // at rest height the spring exactly cancels gravity.
+      // Hover spring. Rapier applies gravity during the step, so add it back here: at rest
+      // height the spring exactly cancels gravity. The damper works relative to the road (how
+      // fast the road rises under us = slope × speed along the track), like a real damper,
+      // so the car follows hills without lagging into the road.
+      this.sampleHint = nearestSampleIndexNear(this.track, pos.x, pos.z, this.sampleHint);
+      const under = this.track.samples[this.sampleHint];
+      const roadVy = under.slope * (v.x * under.tx + v.z * under.tz);
       const compression = CAR_RIDE_HEIGHT - hit.timeOfImpact;
-      vy += (t.gravity + t.suspensionStiffness * compression - t.suspensionDamping * vy) * dt;
+      vy += (t.gravity + t.suspensionStiffness * compression - t.suspensionDamping * (vy - roadVy)) * dt;
 
       const throttle = clamp(input.throttle, -1, 1);
       if (throttle > 0) {
@@ -158,6 +164,12 @@ export class Car {
       const wall = this.wallContact(pos.x, pos.z, fx, fz);
       this.wallSide = wall.side;
       if (wall.side !== 0) vF = approach(vF, 0, t.wallFriction * dt);
+
+      // Hills: the slope along our heading pulls us back uphill and speeds us up downhill.
+      // (The car body stays level and the spring follows the road, so this is the only place
+      // gravity acts along the road.)
+      const sample = this.track.samples[this.sampleHint];
+      vF -= t.gravity * sample.slope * (fx * sample.tx + fz * sample.tz) * dt;
 
       // Tyre saturation: past the peak slip angle, grip and steering authority fall away, so
       // a hard hit turns into a slide or spin you have to catch. Slip is measured at the rear
@@ -253,10 +265,21 @@ export class Car {
     return { side, nx: r.x, nz: r.z, into: Math.max(0, side * fDotR) };
   }
 
+  /**
+   * Ended up under an elevated road (squeezed through it in a crash)? Only checked on the
+   * circuit itself; off it there's no road above to be under.
+   */
+  private belowRoad(x: number, y: number, z: number): boolean {
+    this.sampleHint = nearestSampleIndexNear(this.track, x, z, this.sampleHint);
+    const s = this.track.samples[this.sampleHint];
+    if (Math.hypot(x - s.x, z - s.z) > this.track.def.width) return false;
+    return y < roadHeightAt(this.track, x, z, this.sampleHint) - 2;
+  }
+
   resetToTrack(): void {
     const pos = this.body.translation();
     const s = this.track.samples[nearestSampleIndex(this.track, pos.x, pos.z)];
-    this.body.setTranslation({ x: s.x, y: CAR_RIDE_HEIGHT + 0.3, z: s.z }, true);
+    this.body.setTranslation({ x: s.x, y: s.y + CAR_RIDE_HEIGHT + 0.3, z: s.z }, true);
     this.body.setRotation(yawQuat(Math.atan2(s.tx, s.tz)), true);
     this.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
     this.body.setAngvel({ x: 0, y: 0, z: 0 }, true);

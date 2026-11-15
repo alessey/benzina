@@ -9,3 +9,4 @@ export { SimWorld, carsInContact } from './world';
 export * from './protocol';
 export { Predictor, type Correction } from './predictor';
 export * from './race';
+export * from './tracks';

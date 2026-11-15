@@ -1,4 +1,4 @@
-import { buildTrack, DEFAULT_TRACK, DT, type Track } from '@benzina/shared';
+import { buildTrack, DEFAULT_TRACK, DT, TRACKS, type Track } from '@benzina/shared';
 import { Room, type RoomOptions } from './room';
 
 const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -12,7 +12,10 @@ function randomCode(): string {
 /** Owns all rooms and drives them from a single fixed-rate loop. */
 export class Lobby {
   private readonly rooms = new Map<string, Room>();
-  private readonly track: Track = buildTrack(DEFAULT_TRACK);
+  /** Every track, built once and shared by all rooms. */
+  private readonly tracks = new Map<string, Track>(TRACKS.map((def) => [def.id, buildTrack(def)]));
+  /** Quick-play rooms rotate through the tracks. */
+  private nextQuickTrack = 0;
   private timer: NodeJS.Timeout | null = null;
 
   constructor(private readonly defaults: RoomOptions = {}) {}
@@ -37,12 +40,13 @@ export class Lobby {
     return (
       open.find((r) => r.race.phase === 'lobby') ??
       open[0] ??
-      this.create(this.freshCode(), { ...options, isPublic: true })
+      this.create(this.freshCode(), { ...options, isPublic: true }, TRACKS[this.nextQuickTrack++ % TRACKS.length].id)
     );
   }
 
-  private create(code: string, options: RoomOptions): Room {
-    const room = new Room(code, this.track, { ...this.defaults, ...options });
+  private create(code: string, options: RoomOptions, trackId?: string): Room {
+    const track = this.tracks.get(trackId ?? '') ?? this.tracks.get(DEFAULT_TRACK.id)!;
+    const room = new Room(code, track, { ...this.defaults, ...options }, (id) => this.tracks.get(id));
     this.rooms.set(code, room);
     return room;
   }

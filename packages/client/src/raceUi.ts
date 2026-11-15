@@ -1,4 +1,4 @@
-import type { PlayerInfo, RaceState } from '@benzina/shared';
+import { TRACKS, type PlayerInfo, type RaceState } from '@benzina/shared';
 import { formatTime } from './lapTimer';
 
 export interface RaceView {
@@ -14,6 +14,7 @@ export interface RaceView {
   wrongWay: boolean;
   /** Free-practice lap timer, shown in the lobby. */
   practice: { current: number | null; last: number | null; best: number | null };
+  trackId: string;
 }
 
 const TICK_SECONDS = 1 / 60;
@@ -32,8 +33,10 @@ export class RaceUi {
   private cache = new Map<HTMLElement, string>();
   private lastPanelKey = '';
 
+  private trackId = '';
+
   constructor(
-    private readonly actions: { start(laps: number): void; invite(): void },
+    private readonly actions: { start(laps: number): void; invite(): void; selectTrack(id: string): void },
   ) {
     this.panel.addEventListener('click', (e) => {
       const act = (e.target as HTMLElement).closest<HTMLElement>('[data-act]')?.dataset.act;
@@ -41,6 +44,11 @@ export class RaceUi {
       if (act === 'invite') this.actions.invite();
       if (act === 'laps-') this.laps = Math.max(1, this.laps - 1);
       if (act === 'laps+') this.laps = Math.min(20, this.laps + 1);
+      if (act === 'track-' || act === 'track+') {
+        const i = TRACKS.findIndex((t) => t.id === this.trackId);
+        const next = TRACKS[(i + (act === 'track+' ? 1 : -1) + TRACKS.length) % TRACKS.length];
+        this.actions.selectTrack(next.id);
+      }
       if (act?.startsWith('laps')) this.lastPanelKey = '';
     });
   }
@@ -58,6 +66,7 @@ export class RaceUi {
 
   update(v: RaceView): void {
     const { race } = v;
+    this.trackId = v.trackId;
     const me = race.standings.find((s) => s.id === v.localId);
 
     // Lap box: race info while racing, practice timer otherwise.
@@ -108,6 +117,7 @@ export class RaceUi {
     // Lobby and results card.
     const panelKey = JSON.stringify([
       race.phase,
+      v.trackId,
       v.isHost,
       this.laps,
       [...v.players.values()].map((p) => p.name),
@@ -127,6 +137,10 @@ export class RaceUi {
          <button class="primary" data-act="start">${race.phase === 'results' ? 'Race again' : 'Start race'}</button>`
       : `<p class="muted">Waiting for the host to start…</p>`;
     const invite = v.online ? `<button data-act="invite">Invite friends</button>` : '';
+    const trackName = escapeHtml(TRACKS.find((t) => t.id === v.trackId)?.name ?? v.trackId);
+    const trackRow = v.isHost
+      ? `<div class="laps track"><button data-act="track-" aria-label="Previous track">◀</button><span>${trackName}</span><button data-act="track+" aria-label="Next track">▶</button></div>`
+      : `<p class="muted">Track: ${trackName}</p>`;
 
     if (race.phase === 'lobby') {
       const names = [...v.players.values()]
@@ -135,6 +149,7 @@ export class RaceUi {
       return `<div class="card">
         <div class="title">${v.online ? `Room ${v.room}` : 'Practice'} <span class="muted">· warm up, then start</span></div>
         <ul class="players">${names}</ul>
+        ${trackRow}
         <div class="actions">${startControls}${invite}</div>
       </div>`;
     }
@@ -151,6 +166,7 @@ export class RaceUi {
         <div class="title">Results</div>
         <table><thead><tr><th></th><th>Driver</th><th>Time</th><th>Best lap</th></tr></thead><tbody>${rows}</tbody></table>
         <p class="muted">Back to the lobby in ${secs}s</p>
+        ${trackRow}
         <div class="actions">${startControls}</div>
       </div>`;
     }

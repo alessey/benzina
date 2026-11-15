@@ -96,4 +96,22 @@ describe('networked race', () => {
     expect(room.race.laps).toBe(2);
     run.dispose();
   });
+
+  it('switching track between races keeps everyone in sync', () => {
+    const run = runScenario({
+      ticks: 60 * 15,
+      link: { latency: 6 },
+      policies: [racer, racer],
+      script: (now, ctl) => {
+        if (now === 240) ctl.send(0, { type: 'track', trackId: 'colline' });
+      },
+    });
+    expect(run.room.sim.track.def.id).toBe('colline');
+    expect(run.clientTracks()).toEqual(['colline', 'colline']);
+    // After the switch settles, prediction is as exact as ever (the input streams carried on).
+    const after = stats(run.samples.filter((s) => s.local && s.tick > 240 + 60).map((s) => s.error));
+    expect(after.n).toBeGreaterThan(200);
+    expect(after.p95).toBeLessThan(0.01);
+    run.dispose();
+  });
 });

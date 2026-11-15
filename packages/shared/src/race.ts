@@ -6,7 +6,7 @@
  * must be entered in order, so reversing or skipping earns nothing. The grid sits behind the
  * start line; the first crossing starts your timed laps, each later crossing completes one.
  */
-import { DT } from './config';
+import { CAR_RIDE_HEIGHT, DT } from './config';
 import { gridSlot, nearestSampleIndexNear, type Track } from './track';
 import { yawQuat } from './state';
 import type { SimWorld } from './world';
@@ -81,8 +81,7 @@ export class Race {
       if (car) {
         const g = gridSlot(this.track, slot);
         const q = yawQuat(g.yaw);
-        const y = car.body.translation().y;
-        car.setState({ p: [g.x, y, g.z], q: [q.x, q.y, q.z, q.w], v: [0, 0, 0], w: [0, 0, 0], steer: 0, upset: 0 });
+        car.setState({ p: [g.x, g.y + CAR_RIDE_HEIGHT, g.z], q: [q.x, q.y, q.z, q.w], v: [0, 0, 0], w: [0, 0, 0], steer: 0, upset: 0 });
       }
       return {
         id,

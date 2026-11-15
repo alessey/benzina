@@ -82,8 +82,8 @@ const RACE_UPDATE_TICKS = 15;
  * Socket-free so it can be driven directly in tests.
  */
 export class Room {
-  readonly sim: SimWorld;
-  readonly race: Race;
+  sim: SimWorld;
+  race: Race;
   private readonly players = new Map<number, Player>();
   private readonly bots = new Map<number, Bot>();
   private hostId: number | null = null;
@@ -92,6 +92,8 @@ export class Room {
     readonly code: string,
     track: Track,
     private readonly options: RoomOptions = {},
+    /** Builds tracks by id when the host switches (cached by the lobby). */
+    private readonly trackFor: (id: string) => Track | undefined = () => undefined,
   ) {
     this.sim = new SimWorld(track);
     this.race = new Race(track);
@@ -152,6 +154,7 @@ export class Room {
       race: this.race.state(),
       hostId: this.hostId,
       tick: this.sim.tick,
+      trackId: this.sim.track.def.id,
     });
     this.broadcast({ type: 'joined', player: info }, id);
     return id;
@@ -206,7 +209,29 @@ export class Room {
       this.applyTuning(msg.tuning);
     } else if (msg.type === 'start' && id === this.hostId) {
       this.startRace(Number(msg.laps) || 3);
+    } else if (msg.type === 'track' && id === this.hostId) {
+      this.changeTrack(String(msg.trackId));
     }
+  }
+
+  /**
+   * Between races: rebuild the world on another track. The tick count and every player's
+   * input stream carry on, so client prediction stays aligned through the switch.
+   */
+  changeTrack(trackId: string): void {
+    if (this.race.phase !== 'lobby' && this.race.phase !== 'results') return;
+    const track = this.trackFor(trackId);
+    if (!track || track === this.sim.track) return;
+    const old = this.sim;
+    this.sim = new SimWorld(track, { ...old.tuning }, old.tick);
+    old.free();
+    this.race = new Race(track);
+    for (const p of this.players.values()) {
+      if (p.slot !== null) this.sim.addCar(String(p.info.id), p.slot);
+    }
+    for (const b of this.bots.values()) this.sim.addCar(String(b.info.id), b.slot);
+    this.broadcast({ type: 'track', trackId });
+    this.broadcastRace();
   }
 
   /** Host pressed start: everyone with a car lines up (humans by arrival, then bots). */

@@ -68,9 +68,18 @@ export class Predictor {
   private readonly remoteInputs = new Map<string, CarInput>();
 
   constructor(
-    readonly sim: SimWorld,
+    public sim: SimWorld,
     public localId: string,
   ) {}
+
+  /**
+   * Swap in a new world (track change). Sequence numbers, clock sync and unacknowledged
+   * inputs carry over: the server keeps consuming the same input stream in its new world.
+   */
+  replaceWorld(sim: SimWorld): void {
+    this.sim = sim;
+    this.remoteInputs.clear();
+  }
 
   get pendingCount(): number {
     return this.pending.length;

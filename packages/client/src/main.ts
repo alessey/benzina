@@ -1,17 +1,19 @@
 import * as THREE from 'three';
-import { botInput, buildTrack, DEFAULT_TRACK, DT, initPhysics, nearestSampleIndex, type CarInput } from '@benzina/shared';
+import { botInput, COUNTDOWN_TICKS, DEFAULT_TRACK, DT, initPhysics, nearestSampleIndex, type CarInput } from '@benzina/shared';
 import { createScene } from './scene';
 import { CarRenderer } from './carRenderer';
 import { CarView } from './carView';
 import { ChaseCamera } from './chaseCamera';
 import { DebugOverlay } from './debugOverlay';
+import { Effects } from './effects';
 import { enterFullscreenLandscape, fullscreenSupported, keepScreenAwake, preventBrowserGestures } from './device';
 import { InputManager, IS_TOUCH_DEVICE } from './input';
 import { AdaptiveResolution } from './quality';
+import { AudioEngine, type CarSound } from './audio';
 import { LapTimer } from './lapTimer';
 import { Connection } from './net/connection';
 import { RaceUi } from './raceUi';
-import { OfflineSession, OnlineSession, type Session } from './session';
+import { getTrack, OfflineSession, OnlineSession, type Session } from './session';
 import { showStartScreen, type StartChoice } from './startScreen';
 import { createTuningPanel } from './tuningPanel';
 
@@ -47,8 +49,10 @@ function setStatus(text: string, timeoutMs = 0): void {
 }
 
 await initPhysics();
-const track = buildTrack(DEFAULT_TRACK);
-const { renderer, scene, camera, sun } = createScene(track, { mobile: IS_TOUCH_DEVICE });
+const world = createScene({ mobile: IS_TOUCH_DEVICE });
+const { renderer, scene, camera, sun } = world;
+// The menu shows the track named in the URL (?track=id), else the first one.
+world.setTrack(getTrack(params.get('track') ?? DEFAULT_TRACK.id));
 // Compile every shader now, instead of stalling the first frames of the race (shader
 // compilation can take hundreds of ms on phones). A throwaway car includes the car materials.
 {
@@ -70,26 +74,32 @@ hud.loading.remove();
 const devHooks = {
   scene,
   camera,
-  track,
   THREE,
   session: null as Session | null,
+  frames: 0,
+  firstFrameAt: 0,
+  /** Set [x, y, z, lookX, lookY, lookZ] to take over the camera (screenshots, debugging). */
+  cameraOverride: null as number[] | null,
   corrections: [] as { t: number; id: string; local: boolean; d: number; skips: number }[],
   /** Per-reconcile timeline: client tick, server tick, ack, lead, pending (after), frame ms. */
   timeline: [] as number[][],
 };
-if (import.meta.env.DEV) Object.assign(window, { __benzina: devHooks });
+if (import.meta.env.DEV) Object.assign(window, { __benzina: devHooks, __world: world, __renderer: renderer });
+// (audio is attached to the dev hooks once created, below)
 
 // ------------------------------------------------------------ menu
 
 /** Slow fly-around of the circuit behind the start screen. */
 function attractLoop(): () => void {
   let running = true;
+  const track = getTrack(params.get('track') ?? DEFAULT_TRACK.id);
   const centre = track.samples.reduce((a, s) => ({ x: a.x + s.x / track.samples.length, z: a.z + s.z / track.samples.length }), { x: 0, z: 0 });
   const loop = (t: number) => {
     if (!running) return;
     const a = t / 20000;
     camera.position.set(centre.x + Math.cos(a) * 260, 110, centre.z + Math.sin(a) * 260);
     camera.lookAt(centre.x, 0, centre.z);
+    world.update();
     renderer.render(scene, camera);
     requestAnimationFrame(loop);
   };
@@ -109,7 +119,7 @@ async function openSession(): Promise<Session> {
   let error: string | undefined;
   for (;;) {
     const choice = (!error && choiceFromUrl()) || (await showStartScreen({ inviteCode: params.get('room'), error }));
-    if (choice.mode === 'offline') return new OfflineSession(track, choice.bots);
+    if (choice.mode === 'offline') return new OfflineSession(getTrack(params.get('track') ?? DEFAULT_TRACK.id), choice.bots);
     setStatus('Connecting…');
     try {
       const { conn, welcome } = await Connection.open({
@@ -124,13 +134,17 @@ async function openSession(): Promise<Session> {
       // Put the room code in the URL so a reload rejoins and the address bar is shareable.
       params.set('room', welcome.room);
       history.replaceState(null, '', `?${params}`);
-      return new OnlineSession(track, conn, welcome);
+      return new OnlineSession(conn, welcome);
     } catch (err) {
       setStatus('');
       error = `Couldn't connect: ${(err as Error).message}`;
     }
   }
 }
+
+// Created before the start screen so its first click unlocks audio.
+const audio = new AudioEngine();
+if (import.meta.env.DEV) Object.assign(window, { __audio: audio });
 
 const stopAttract = attractLoop();
 const session = await openSession();
@@ -153,15 +167,24 @@ if (IS_TOUCH_DEVICE && fullscreenSupported()) {
   document.addEventListener('fullscreenchange', () => (btn.hidden = !!document.fullscreenElement));
 }
 
-const cars = new CarRenderer(
-  scene,
-  session.sim,
-  (id) => session.players.get(id)?.name ?? `Car ${id}`,
-  () => session.localId,
-);
+// Everything tied to the current track/world is rebuilt when the host switches track.
+const makeCarRenderer = () =>
+  new CarRenderer(scene, session.sim, session.track, (id) => session.players.get(id)?.name ?? `Car ${id}`, () => session.localId);
+let cars = makeCarRenderer();
+let effects = new Effects(scene, session.sim, session.track);
+world.setTrack(session.track);
 const chase = new ChaseCamera(camera);
 const input = new InputManager();
-let practiceLaps = new LapTimer(track);
+let practiceLaps = new LapTimer(session.track);
+session.onTrackChange = () => {
+  cars.dispose();
+  cars = makeCarRenderer();
+  effects.dispose();
+  effects = new Effects(scene, session.sim, session.track);
+  world.setTrack(session.track);
+  practiceLaps = new LapTimer(session.track);
+  devHooks.corrections.length = 0;
+};
 const debug = new DebugOverlay(scene, params.has('debug'));
 
 async function invite(): Promise<void> {
@@ -180,13 +203,17 @@ async function invite(): Promise<void> {
   }
 }
 
-const raceUi = new RaceUi({ start: (laps) => session.startRace(laps), invite: () => void invite() });
+const raceUi = new RaceUi({
+  start: (laps) => session.startRace(laps),
+  invite: () => void invite(),
+  selectTrack: (id) => session.selectTrack(id),
+});
 
 let lastPhase = session.race.phase;
 function onSessionChange(): void {
   const phase = session.race.phase;
   // Fresh practice timer whenever a race starts or ends (cars get teleported).
-  if (phase !== lastPhase) practiceLaps = new LapTimer(track);
+  if (phase !== lastPhase) practiceLaps = new LapTimer(session.track);
   lastPhase = phase;
   if (!online) {
     hud.room.textContent = 'Offline';
@@ -202,10 +229,98 @@ if (online) {
   online.onDisconnect = () => setStatus('Disconnected from server. Reload to rejoin.');
 }
 
+let lastThrottle = 0;
 function controls(): CarInput {
   const human = input.sample();
   const car = session.localId ? session.sim.cars.get(session.localId) : undefined;
-  return AUTOPILOT && car ? { ...botInput(car, track), reset: human.reset } : human;
+  const c = AUTOPILOT && car ? { ...botInput(car, session.track), reset: human.reset } : human;
+  lastThrottle = Math.abs(c.throttle);
+  return c;
+}
+
+const muteBtn = document.getElementById('mute')!;
+const syncMute = () => (muteBtn.textContent = audio.isMuted ? '🔇' : '🔊');
+syncMute();
+muteBtn.addEventListener('click', () => {
+  audio.toggleMute();
+  syncMute();
+});
+window.addEventListener('keydown', (e) => {
+  if (e.code === 'KeyM' && !e.repeat) {
+    audio.toggleMute();
+    syncMute();
+  }
+});
+
+/** Cars worth hearing this frame: everything in the sim, with engine/screech estimates. */
+function carSounds(): CarSound[] {
+  const out: CarSound[] = [];
+  for (const [id, car] of session.sim.cars) {
+    const p = car.body.translation();
+    const v = car.body.linvel();
+    const q = car.body.rotation();
+    const yaw = 2 * Math.atan2(q.y, q.w);
+    const lateral = Math.abs(v.x * -Math.cos(yaw) + v.z * Math.sin(yaw));
+    const speed = car.forwardSpeed();
+    const local = id === session.localId;
+    out.push({
+      id,
+      local,
+      speed,
+      // Our own throttle is known; for others, assume they're on it unless crawling.
+      throttle: local ? lastThrottle : Math.min(1, 0.35 + Math.abs(speed) / 40),
+      slip: car.grounded ? Math.min(1, Math.max(0, (lateral - 2.5) / 7) + car.upset * 0.6) : 0,
+      x: p.x,
+      y: p.y,
+      z: p.z,
+    });
+  }
+  return out;
+}
+
+// Sound cues from race events.
+let lastLights = '';
+let lastLaps = -1;
+let lastFinished = false;
+let lastVelocity: { x: number; z: number } | null = null;
+function soundCues(): void {
+  const race = session.race;
+  const now = session.serverTickNow();
+  // Countdown beeps follow the gantry lamps.
+  let lights = '';
+  if (race.phase === 'countdown') lights = `r${Math.min(5, Math.floor((COUNTDOWN_TICKS - (race.startTick - now)) / (COUNTDOWN_TICKS / 5)) + 1)}`;
+  else if (race.phase === 'racing' && now - race.startTick < 150) lights = 'go';
+  if (lights !== lastLights) {
+    if (lights.startsWith('r')) audio.beep(440, 0.16);
+    else if (lights === 'go') audio.beep(880, 0.5);
+    lastLights = lights;
+  }
+  const me = race.standings.find((s) => s.id === session.localId);
+  if (me && race.phase === 'racing') {
+    if (lastLaps >= 0 && me.lapsDone > lastLaps && me.finishTime === null) audio.chime(3);
+    if (me.finishTime !== null && !lastFinished) audio.chime(5);
+    lastLaps = me.lapsDone;
+    lastFinished = me.finishTime !== null;
+  } else {
+    lastLaps = -1;
+    lastFinished = false;
+  }
+}
+
+/** Thump when our car's velocity changes sharply in one tick (walls, other cars). */
+function checkImpact(): void {
+  const car = session.localId ? session.sim.cars.get(session.localId) : undefined;
+  if (!car) {
+    lastVelocity = null;
+    return;
+  }
+  const v = car.body.linvel();
+  if (lastVelocity) {
+    const dv = Math.hypot(v.x - lastVelocity.x, v.z - lastVelocity.z);
+    // Driving accelerates by < 0.5 m/s per tick; anything much bigger is a hit.
+    if (dv > 2.5) audio.crash((dv - 2) / 10);
+  }
+  lastVelocity = { x: v.x, z: v.z };
 }
 
 /** Is our car driving the wrong way round? (moving backwards along the track at speed) */
@@ -215,7 +330,7 @@ function updateWrongWay(): boolean {
   if (!car) return false;
   const p = car.body.translation();
   const v = car.body.linvel();
-  const s = track.samples[nearestSampleIndex(track, p.x, p.z)];
+  const s = session.track.samples[nearestSampleIndex(session.track, p.x, p.z)];
   const along = v.x * s.tx + v.z * s.tz;
   wrongWayTicks = along < -4 ? wrongWayTicks + 1 : 0;
   return wrongWayTicks > 30;
@@ -234,7 +349,10 @@ let fps = 60;
 let wrongWay = false;
 
 function frame(now: number): void {
-  const rawFrameTime = (now - lastTime) / 1000;
+  if (import.meta.env.DEV && devHooks.frames++ === 0) devHooks.firstFrameAt = performance.now();
+  // rAF passes the frame's start time, which can predate the performance.now() we started from
+  // (e.g. after a heavy startup): never let elapsed time go negative.
+  const rawFrameTime = Math.max(0, (now - lastTime) / 1000);
   const frameTime = Math.min(rawFrameTime, online ? MAX_FRAME_TIME_ONLINE : MAX_FRAME_TIME_OFFLINE);
   lastTime = now;
   session.noteDroppedTime(rawFrameTime - frameTime);
@@ -252,6 +370,7 @@ function frame(now: number): void {
       const p = local.body.translation();
       practiceLaps.update(p.x, p.z, session.tick);
     }
+    checkImpact();
     accumulator -= DT;
   }
   wrongWay = updateWrongWay();
@@ -266,6 +385,8 @@ function frame(now: number): void {
   }
   cars.sync();
   if (corrections) {
+    // A correction can change our velocity abruptly; that's not a crash.
+    lastVelocity = null;
     cars.applyCorrections(corrections);
     debug.recordCorrections(corrections, session.localId);
     if (import.meta.env.DEV && devHooks.corrections.length < 20000) {
@@ -277,14 +398,37 @@ function frame(now: number): void {
   }
 
   // 3. Render, interpolating between ticks.
-  cars.render(accumulator / DT, frameTime);
-  const pose = cars.poseOf(cameraTarget());
-  if (pose) {
+  const followed = cameraTarget();
+  cars.render(accumulator / DT, frameTime, camera, followed);
+  effects.update(frameTime);
+  const pose = cars.poseOf(followed);
+  if (import.meta.env.DEV && devHooks.cameraOverride) {
+    const [x, y, z, lx, ly, lz] = devHooks.cameraOverride;
+    camera.position.set(x, y, z);
+    camera.lookAt(lx, ly, lz);
+  } else if (pose) {
     chase.update(pose.pos, pose.rot, pose.speed / session.sim.tuning.maxSpeed, frameTime);
     sun.position.set(pose.pos.x + 30, 60, pose.pos.z + 20);
     sun.target.position.copy(pose.pos);
     hud.speed.textContent = String(Math.round(Math.abs(pose.speed) * 3.6));
   }
+
+  // Countdown lights on the gantry: a red lamp per 0.6 s, then all green at GO.
+  const nowTick = session.serverTickNow();
+  const race = session.race;
+  if (race.phase === 'countdown') {
+    const elapsed = COUNTDOWN_TICKS - (race.startTick - nowTick);
+    world.setStartLights(Math.min(5, Math.max(0, Math.floor(elapsed / (COUNTDOWN_TICKS / 5)) + 1)), false);
+  } else if (race.phase === 'racing' && nowTick - race.startTick < 150) {
+    world.setStartLights(0, true);
+  } else {
+    world.setStartLights(0, false);
+  }
+
+  soundCues();
+  const forward = new THREE.Vector3();
+  camera.getWorldDirection(forward);
+  audio.update(carSounds(), { position: camera.position, forward });
 
   raceUi.update({
     race: session.race,
@@ -297,6 +441,7 @@ function frame(now: number): void {
     spectating: !!online && !session.localId,
     wrongWay,
     practice: { current: practiceLaps.current(session.tick), last: practiceLaps.lastLap, best: practiceLaps.bestLap },
+    trackId: session.track.def.id,
   });
 
   debug.updateGhosts(online?.lastSnapshot ?? null);
@@ -312,6 +457,7 @@ function frame(now: number): void {
     fps,
   });
 
+  world.update();
   renderer.render(scene, camera);
   requestAnimationFrame(frame);
 }

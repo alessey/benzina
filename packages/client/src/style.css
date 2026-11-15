@@ -533,3 +533,31 @@ body.menu #hud {
     padding: 4px 10px;
   }
 }
+.card .track {
+  margin-bottom: 8px;
+}
+.card .track span {
+  flex: 1;
+  text-align: center;
+  font-weight: 700;
+}
+
+#mute {
+  position: fixed;
+  top: calc(var(--safe-top) + 30px);
+  right: var(--safe-right);
+  width: 40px;
+  height: 40px;
+  border: 0;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.35);
+  color: #fff;
+  font-size: 18px;
+  z-index: 7;
+}
+body.touch #mute {
+  top: calc(var(--safe-top) + 104px);
+}
+body.menu #mute {
+  display: none;
+}

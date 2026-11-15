@@ -14,6 +14,8 @@ import {
   type CarInput,
   type ClientMessage,
   type ServerMessage,
+  type Track,
+  trackById,
 } from '@benzina/shared';
 import { Room } from '../src/room';
 
@@ -70,6 +72,8 @@ export interface CorrectionSample {
 export type Policy = (car: Car, tick: number, sim: SimWorld) => CarInput;
 
 export interface Scenario {
+  /** Defaults to the flat Circuito Uno. */
+  track?: Track;
   ticks: number;
   link: LinkOptions;
   policies: Policy[];
@@ -92,7 +96,12 @@ export interface ScriptControl {
 }
 
 export function runScenario(sc: Scenario) {
-  const room = new Room('TEST', track, { bots: sc.bots ?? 0 });
+  const world = sc.track ?? track;
+  const built = new Map<string, Track>();
+  const room = new Room('TEST', world, { bots: sc.bots ?? 0 }, (id) => {
+    if (!built.has(id)) built.set(id, buildTrack(trackById(id)));
+    return built.get(id);
+  });
   const rand = mulberry32(sc.seed ?? 99);
   let now = 0;
   const samples: CorrectionSample[] = [];
@@ -104,7 +113,7 @@ export function runScenario(sc: Scenario) {
     const outbox: Packet[] = [];
     const id = room.join({ send: (data) => inbox.push({ at: down(now), data }) }, `client${index}`);
     if (id === null) throw new Error('join failed');
-    const predictor = new Predictor(new SimWorld(track), String(id));
+    const predictor = new Predictor(new SimWorld(world), String(id));
     return { index, id, policy, inbox, outbox, up, predictor, clock: 0, lastSnapAt: 0 };
   });
 
@@ -146,6 +155,11 @@ export function runScenario(sc: Scenario) {
         if (typeof data === 'string') {
           const msg = JSON.parse(data) as ServerMessage;
           if (msg.type === 'welcome') Object.assign(c.predictor.sim.tuning, msg.tuning);
+          if (msg.type === 'track') {
+            const old = c.predictor.sim;
+            c.predictor.replaceWorld(new SimWorld(buildTrack(trackById(msg.trackId)), { ...old.tuning }));
+            old.free();
+          }
           if (msg.type === 'race' || msg.type === 'welcome') {
             c.predictor.setFreeze(msg.race.phase === 'countdown' ? msg.race.startTick : null);
           }
@@ -194,6 +208,8 @@ export function runScenario(sc: Scenario) {
       room.dispose();
       for (const c of clients) c.predictor.sim.free();
     },
+    /** Which track each client's world is on (to check track switches reached everyone). */
+    clientTracks: () => clients.map((c) => c.predictor.sim.track.def.id),
   };
 }
 

@@ -86,12 +86,12 @@ export const DEFAULT_TUNING: CarTuning = {
   handbrakeYawBoost: 1.5,
   steerSpeed: 6,
   yawResponse: 12,
-  suspensionStiffness: 300,
-  suspensionDamping: 32,
+  suspensionStiffness: 500,
+  suspensionDamping: 42,
   pivotOffset: 1.2,
   wallFriction: 14,
   wallDeflect: 6,
-  wallPushOff: 3,
+  wallPushOff: 3.5,
   bumpSeparation: 3,
   bumpDeflect: 4,
   bumpSpin: 2,
@@ -115,11 +115,12 @@ export const CAR_HALF_HEIGHT = CAR_SHAPE.halfHeight + CAR_SHAPE.borderRadius;
 
 /**
  * Cars hover: a raycast spring holds the collider this far above the road, so normal driving
- * never touches Rapier's contact solver. Contact state is history-dependent and can't be
+ * never touches Rapier's contact solver. Cars stay level in physics (roll/pitch locked), so
+ * this also has to clear slopes and banking under a 4 m × 2 m car (≈ 15% grade or 10° bank). Contact state is history-dependent and can't be
  * restored from a snapshot; the spring depends only on position and velocity, so client
  * re-simulation matches the server.
  */
-export const HOVER_CLEARANCE = 0.12;
+export const HOVER_CLEARANCE = 0.3;
 
 /** Height of the car's centre above flat ground at rest. */
 export const CAR_RIDE_HEIGHT = CAR_HALF_HEIGHT + HOVER_CLEARANCE;

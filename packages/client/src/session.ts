@@ -1,6 +1,8 @@
 import {
   botInput,
+  buildTrack,
   DT,
+  trackById,
   NEUTRAL_INPUT,
   Predictor,
   Race,
@@ -16,9 +18,18 @@ import {
 } from '@benzina/shared';
 import type { Connection } from './net/connection';
 
+const trackCache = new Map<string, Track>();
+/** Tracks are built once per page (building samples the spline and walls). */
+export function getTrack(id: string | undefined): Track {
+  const def = trackById(id);
+  if (!trackCache.has(def.id)) trackCache.set(def.id, buildTrack(def));
+  return trackCache.get(def.id)!;
+}
+
 /** A game in progress, either purely local or connected to a server. */
 export interface Session {
   readonly sim: SimWorld;
+  readonly track: Track;
   /** Our car's id, or null if we have no car (yet, or spectating). */
   readonly localId: string | null;
   /** Local tick counter (live ticks only). */
@@ -38,36 +49,55 @@ export interface Session {
   /** Real time the frame loop declined to simulate (frame longer than the catch-up cap), seconds. */
   noteDroppedTime(seconds: number): void;
   startRace(laps: number): void;
+  /** Host only, between races. */
+  selectTrack(id: string): void;
   /** Called when race state, players or host change. */
   onChange: () => void;
+  /** Called after the world was rebuilt on another track (sim and track are new objects). */
+  onTrackChange: () => void;
 }
 
 /** Single player against local bots. Runs the same race rules the server does. */
 export class OfflineSession implements Session {
-  readonly sim: SimWorld;
+  sim: SimWorld;
+  track: Track;
   readonly localId = '1';
   readonly timeScale = 1;
   readonly isHost = true;
   readonly players = new Map<string, PlayerInfo>();
   onChange: () => void = () => {};
-  private readonly raceLogic: Race;
+  onTrackChange: () => void = () => {};
+  private raceLogic: Race;
   private readonly botIds: string[] = [];
 
-  constructor(
-    private readonly track: Track,
-    bots: number,
-    tuning?: CarTuning,
-  ) {
-    this.sim = new SimWorld(track, tuning);
-    this.raceLogic = new Race(track);
-    this.sim.addCar(this.localId, 0);
+  constructor(track: Track, bots: number, tuning?: CarTuning) {
+    this.track = track;
     this.players.set(this.localId, { id: 1, name: 'You', bot: false });
     for (let i = 0; i < Math.min(7, bots); i++) {
       const id = String(100 + i);
-      this.sim.addCar(id, i + 1);
       this.botIds.push(id);
       this.players.set(id, { id: 100 + i, name: `Bot ${i + 1}`, bot: true });
     }
+    [this.sim, this.raceLogic] = this.buildWorld(track, tuning);
+  }
+
+  private buildWorld(track: Track, tuning?: CarTuning): [SimWorld, Race] {
+    const sim = new SimWorld(track, tuning);
+    sim.addCar(this.localId, 0);
+    this.botIds.forEach((id, i) => sim.addCar(id, i + 1));
+    return [sim, new Race(track)];
+  }
+
+  selectTrack(id: string): void {
+    if (this.raceLogic.phase !== 'lobby' && this.raceLogic.phase !== 'results') return;
+    const track = getTrack(id);
+    if (track === this.track) return;
+    const old = this.sim;
+    this.track = track;
+    [this.sim, this.raceLogic] = this.buildWorld(track, { ...old.tuning });
+    old.free();
+    this.onTrackChange();
+    this.onChange();
   }
 
   get tick(): number {
@@ -107,7 +137,8 @@ export class OfflineSession implements Session {
 }
 
 export class OnlineSession implements Session {
-  readonly sim: SimWorld;
+  sim: SimWorld;
+  track: Track;
   readonly predictor: Predictor;
   readonly players = new Map<string, PlayerInfo>();
   /** Most recent raw server snapshot (for debug ghosts). */
@@ -115,6 +146,7 @@ export class OnlineSession implements Session {
   race: RaceState;
   hostId: number | null;
   onChange: () => void = () => {};
+  onTrackChange: () => void = () => {};
   /** Set by the owner to react to server-side tuning changes. */
   onTuning: () => void = () => {};
   onDisconnect: () => void = () => {};
@@ -123,11 +155,11 @@ export class OnlineSession implements Session {
   private tickRef = { server: 0, local: 0 };
 
   constructor(
-    track: Track,
     readonly conn: Connection,
     welcome: Extract<ServerMessage, { type: 'welcome' }>,
   ) {
-    this.sim = new SimWorld(track, { ...welcome.tuning });
+    this.track = getTrack(welcome.trackId);
+    this.sim = new SimWorld(this.track, { ...welcome.tuning });
     this.predictor = new Predictor(this.sim, String(welcome.id));
     this.myId = welcome.id;
     this.room = welcome.room;
@@ -151,6 +183,16 @@ export class OnlineSession implements Session {
           Object.assign(this.sim.tuning, msg.tuning);
           this.onTuning();
           break;
+        case 'track': {
+          // The server rebuilt its world; ours follows. Our input stream carries on unchanged.
+          const old = this.sim;
+          this.track = getTrack(msg.trackId);
+          this.sim = new SimWorld(this.track, { ...old.tuning });
+          this.predictor.replaceWorld(this.sim);
+          old.free();
+          this.onTrackChange();
+          break;
+        }
         case 'race':
           this.hostId = msg.hostId;
           this.applyRace(msg.race, msg.tick);
@@ -226,6 +268,10 @@ export class OnlineSession implements Session {
 
   startRace(laps: number): void {
     this.conn.sendMessage({ type: 'start', laps });
+  }
+
+  selectTrack(id: string): void {
+    this.conn.sendMessage({ type: 'track', trackId: id });
   }
 
   sendTuning(tuning: CarTuning): void {

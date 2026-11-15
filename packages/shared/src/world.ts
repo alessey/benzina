@@ -2,7 +2,7 @@ import { RAPIER } from './physics';
 import { Car, HALF_L, HALF_W } from './car';
 import { DEFAULT_TUNING, DT, type CarTuning } from './config';
 import { NEUTRAL_INPUT, type CarInput } from './input';
-import { gridSlot, type Track, type Vec2 } from './track';
+import { gridSlot, type Track, type Vec3 } from './track';
 
 const GROUND_HALF_SIZE = 2000;
 
@@ -19,7 +19,10 @@ export class SimWorld {
   constructor(
     readonly track: Track,
     readonly tuning: CarTuning = { ...DEFAULT_TUNING },
+    /** Continue the tick count from a previous world (track changes keep timelines aligned). */
+    startTick = 0,
   ) {
+    this.tick = startTick;
     this.world = new RAPIER.World({ x: 0, y: -tuning.gravity, z: 0 });
     this.world.timestep = DT;
 
@@ -28,6 +31,10 @@ export class SimWorld {
         .setTranslation(0, -0.5, 0)
         .setFriction(0),
     );
+
+    // The road surface: a static triangle mesh following the track's heights and banking. Cars
+    // hover over it on a raycast spring, so normal driving never touches it.
+    this.world.createCollider(RAPIER.ColliderDesc.trimesh(...roadMesh(track)).setFriction(0));
 
     // One triangle-mesh collider per side, standing on the road edge. Hundreds of separate
     // box colliders cost ~4x more per step, which matters because clients re-simulate
@@ -38,7 +45,7 @@ export class SimWorld {
     ] as const) {
       this.world.createCollider(
         RAPIER.ColliderDesc.trimesh(
-          ...wallMesh(edge, track.def.wallHeight, facing),
+          ...wallMesh(edge, track, track.def.wallHeight, facing),
           RAPIER.TriMeshFlags.FIX_INTERNAL_EDGES,
         )
           .setFriction(0)
@@ -55,7 +62,7 @@ export class SimWorld {
   addCar(id: string, slot: number): Car {
     if (this.cars.has(id)) throw new Error(`car ${id} already exists`);
     const g = gridSlot(this.track, slot);
-    const car = new Car(this.world, this.track, id, g.x, g.z, g.yaw);
+    const car = new Car(this.world, this.track, id, g.x, g.y, g.z, g.yaw);
     this.cars.set(id, car);
     return car;
   }
@@ -246,16 +253,44 @@ function boxContact(
   return { nx, nz, cx: (ax + bx) / 2, cz: (az + bz) / 2 };
 }
 
+/** Closed strip between the left and right road edges, facing up. */
+function roadMesh(track: Track): [Float32Array, Uint32Array] {
+  const n = track.samples.length;
+  const vertices = new Float32Array(n * 6);
+  const indices = new Uint32Array(n * 6);
+  for (let i = 0; i < n; i++) {
+    const l = track.leftEdge[i];
+    const r = track.rightEdge[i];
+    vertices.set([l.x, l.y, l.z, r.x, r.y, r.z], i * 6);
+    const a = i * 2;
+    const b = ((i + 1) % n) * 2;
+    // Left(i), right(i), left(i+1): with left = -right, this winding faces up.
+    indices.set([a, a + 1, b, a + 1, b + 1, b], i * 6);
+  }
+  return [vertices, indices];
+}
+
+/** Extra invisible wall height above the visible wall, so nothing ever goes over the top. */
+const WALL_TOP_MARGIN = 1.5;
+
 /**
- * A vertical ribbon along a closed edge loop, from the ground up to `height`. Triangles must
- * face the road: with internal-edge fixing, Rapier treats them as one-sided. With the
- * default winding, normals point to the right of the driving direction; `facing = -1` flips them.
+ * A vertical ribbon along a closed edge loop, from below the road up past the visible wall.
+ * Its top is measured from the higher of the edge and the centre line: on a banked corner the
+ * inside edge is well below the centre, and cars stay level in physics at centre height, so a
+ * wall measured from the low edge would let them slide right over it.
+ *
+ * Triangles must face the road: with internal-edge fixing, Rapier treats them as one-sided.
+ * With the default winding, normals point to the right of the driving direction; `facing = -1`
+ * flips them.
  */
-function wallMesh(edge: Vec2[], height: number, facing: 1 | -1): [Float32Array, Uint32Array] {
+function wallMesh(edge: Vec3[], track: Track, height: number, facing: 1 | -1): [Float32Array, Uint32Array] {
   const n = edge.length;
   const vertices = new Float32Array(n * 6);
   const indices = new Uint32Array(n * 6);
-  edge.forEach((p, i) => vertices.set([p.x, 0, p.z, p.x, height, p.z], i * 6));
+  edge.forEach((p, i) => {
+    const top = Math.max(p.y, track.samples[i].y) + height + WALL_TOP_MARGIN;
+    vertices.set([p.x, p.y - 1, p.z, p.x, top, p.z], i * 6);
+  });
   for (let i = 0; i < n; i++) {
     const a = i * 2;
     const b = ((i + 1) % n) * 2;
