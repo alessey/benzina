@@ -2,9 +2,14 @@ import { RAPIER } from './physics';
 import { CAR_RIDE_HEIGHT, CAR_SHAPE, SUSPENSION_TRAVEL, type CarTuning } from './config';
 import type { CarInput } from './input';
 import { type CarState, yawOf, yawQuat } from './state';
-import { nearestSampleIndex, type Track } from './track';
+import { nearestSampleIndex, nearestSampleIndexNear, rightOf, type Track } from './track';
 
 const FALL_RESET_Y = -10;
+/** Closer than this to a wall (metres) counts as touching it. */
+const WALL_CONTACT_GAP = 0.08;
+/** Full extents of the car's collider, including the rounded border. */
+const HALF_W = CAR_SHAPE.halfWidth + CAR_SHAPE.borderRadius;
+const HALF_L = CAR_SHAPE.halfLength + CAR_SHAPE.borderRadius;
 
 function clamp(v: number, lo: number, hi: number): number {
   return v < lo ? lo : v > hi ? hi : v;
@@ -30,6 +35,10 @@ export class Car {
   /** Smoothed steering (-1..1); part of the simulated state. */
   steer = 0;
   grounded = false;
+  /** Which wall the car is touching this tick: 1 right, -1 left, 0 none. (Derived, not state.) */
+  wallSide: -1 | 0 | 1 = 0;
+  /** Search hint for the nearest centre-line sample. Only speeds up the search. */
+  private sampleHint = 0;
 
   constructor(
     private readonly world: RAPIER.World,
@@ -126,25 +135,77 @@ export class Car {
 
       if (input.handbrake) vF = approach(vF, 0, t.handbrakeDecel * dt);
 
-      const grip = input.handbrake ? t.driftGrip : t.grip;
-      vL *= Math.exp(-grip * dt);
+      // Scraping a wall bleeds speed.
+      const wall = this.wallContact(pos.x, pos.z, fx, fz);
+      this.wallSide = wall.side;
+      if (wall.side !== 0) vF = approach(vF, 0, t.wallFriction * dt);
 
       const speed = Math.abs(vF);
       const lowSpeedFactor = clamp(speed / t.steerFullSpeed, 0, 1);
       const highSpeedFactor = 1 + (t.highSpeedSteer - 1) * clamp(speed / t.maxSpeed, 0, 1);
       const boost = input.handbrake ? t.handbrakeYawBoost : 1;
       // Steering right (+) turns clockwise seen from above, which is negative yaw.
-      const targetYawRate =
+      let targetYawRate =
         -this.steer * t.maxYawRate * lowSpeedFactor * highSpeedFactor * boost * Math.sign(vF);
+      // Pointed into the wall? Turn parallel to it so the car glances off instead of pinning.
+      // (Turning away from the right wall is a left turn, i.e. positive yaw.)
+      if (wall.side !== 0 && wall.into > 0) targetYawRate += wall.side * wall.into * t.wallDeflect * Math.sign(vF);
       yawRate += (targetYawRate - yawRate) * (1 - Math.exp(-t.yawResponse * dt));
 
-      this.body.setLinvel({ x: fx * vF + rx * vL, y: vy, z: fz * vF + rz * vL }, true);
+      // Grip pulls sideways velocity toward what turning around the rear axle implies:
+      // the centre moves toward the inside of the turn, so the tail doesn't swing out.
+      const grip = input.handbrake ? t.driftGrip : t.grip;
+      const vLTarget = -yawRate * t.pivotOffset;
+      vL = vLTarget + (vL - vLTarget) * Math.exp(-grip * dt);
+
+      let vx = fx * vF + rx * vL;
+      let vz = fz * vF + rz * vL;
+
+      // Steering away from a wall you're touching: shove off it so there's room to turn
+      // (otherwise the solver blocks the rotation and the car stays stuck to the wall).
+      if (wall.side !== 0 && wall.side * this.steer < 0) {
+        const awayX = -wall.side * wall.nx;
+        const awayZ = -wall.side * wall.nz;
+        const needed = t.wallPushOff * Math.abs(this.steer) - (vx * awayX + vz * awayZ);
+        if (needed > 0) {
+          vx += awayX * needed;
+          vz += awayZ * needed;
+        }
+      }
+
+      this.body.setLinvel({ x: vx, y: vy, z: vz }, true);
     } else {
       // Airborne: no control, spin slowly bleeds off.
+      this.wallSide = 0;
       yawRate *= Math.exp(-2 * dt);
     }
 
     this.body.setAngvel({ x: 0, y: yawRate, z: 0 }, true);
+  }
+
+  /**
+   * Is the car touching a track wall? Computed geometrically from the car's position and
+   * heading against the local road edge, not from Rapier's contact data, whose internal state
+   * isn't part of a snapshot. That keeps client re-simulation exact.
+   *
+   * Returns the side (1 right, -1 left, 0 none), the wall's outward normal on the right
+   * side (track "right" vector), and how much the car's nose points into the wall (0..1).
+   */
+  private wallContact(x: number, z: number, fx: number, fz: number): { side: -1 | 0 | 1; nx: number; nz: number; into: number } {
+    this.sampleHint = nearestSampleIndexNear(this.track, x, z, this.sampleHint);
+    const s = this.track.samples[this.sampleHint];
+    const r = rightOf(s.tx, s.tz);
+    const offset = (x - s.x) * r.x + (z - s.z) * r.z;
+    // How far the car's box reaches sideways across the road (support along r).
+    const fDotR = fx * r.x + fz * r.z;
+    const carRightDotR = -fz * r.x + fx * r.z;
+    const reach = HALF_L * Math.abs(fDotR) + HALF_W * Math.abs(carRightDotR);
+    const halfRoad = this.track.def.width / 2;
+
+    let side: -1 | 0 | 1 = 0;
+    if (halfRoad - (offset + reach) < WALL_CONTACT_GAP) side = 1;
+    else if (halfRoad - (reach - offset) < WALL_CONTACT_GAP) side = -1;
+    return { side, nx: r.x, nz: r.z, into: Math.max(0, side * fDotR) };
   }
 
   resetToTrack(): void {

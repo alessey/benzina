@@ -41,6 +41,17 @@ export interface CarTuning {
   suspensionStiffness: number;
   /** Hover suspension damping (1/s). ~2·√stiffness is critically damped. */
   suspensionDamping: number;
+  /**
+   * Distance behind the car's centre that it turns around (≈ rear axle), metres. Real cars
+   * pivot near the rear axle, so the tail doesn't swing out; 0 pivots around the centre.
+   */
+  pivotOffset: number;
+  /** Deceleration while scraping a wall, m/s². */
+  wallFriction: number;
+  /** How strongly a car pointed into a wall is turned parallel to it (rad/s per unit). */
+  wallDeflect: number;
+  /** Sideways speed away from a wall when touching it and steering away, m/s (at full lock). */
+  wallPushOff: number;
 }
 
 export const DEFAULT_TUNING: CarTuning = {
@@ -62,6 +73,10 @@ export const DEFAULT_TUNING: CarTuning = {
   yawResponse: 12,
   suspensionStiffness: 300,
   suspensionDamping: 32,
+  pivotOffset: 1.2,
+  wallFriction: 14,
+  wallDeflect: 6,
+  wallPushOff: 3,
 };
 
 /** Car collision box, metres. Collider is a rounded cuboid: half extents + border radius. */

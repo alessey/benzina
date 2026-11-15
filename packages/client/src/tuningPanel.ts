@@ -20,6 +20,10 @@ const RANGES: Record<keyof CarTuning, [number, number, number]> = {
   yawResponse: [1, 40, 0.5],
   suspensionStiffness: [50, 1000, 10],
   suspensionDamping: [0, 80, 1],
+  pivotOffset: [0, 2, 0.05],
+  wallFriction: [0, 40, 0.5],
+  wallDeflect: [0, 20, 0.5],
+  wallPushOff: [0, 10, 0.1],
 };
 
 const STORAGE_KEY = 'benzina.tuning';

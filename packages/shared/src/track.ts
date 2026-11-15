@@ -174,6 +174,31 @@ export function nearestSampleIndex(track: Track, x: number, z: number): number {
   return best;
 }
 
+const LOCAL_SEARCH = 12;
+
+/**
+ * Like nearestSampleIndex, but searches a small window around `hint` first (a car rarely
+ * moves more than a sample or two per tick). Falls back to the full search if the local
+ * answer isn't on the road, so a stale hint (teleport, snapshot) can't give a wrong result
+ * unless two parts of the track are within a road width of each other.
+ */
+export function nearestSampleIndexNear(track: Track, x: number, z: number, hint: number): number {
+  const n = track.samples.length;
+  let best = -1;
+  let bestD = Infinity;
+  for (let k = -LOCAL_SEARCH; k <= LOCAL_SEARCH; k++) {
+    const i = (((hint + k) % n) + n) % n;
+    const s = track.samples[i];
+    const d = (s.x - x) ** 2 + (s.z - z) ** 2;
+    if (d < bestD) {
+      bestD = d;
+      best = i;
+    }
+  }
+  if (bestD > track.def.width * track.def.width) return nearestSampleIndex(track, x, z);
+  return best;
+}
+
 /** Starting grid: two columns, staggered behind the start line (sample 0). */
 export function gridSlot(track: Track, slot: number): { x: number; z: number; yaw: number } {
   const s0 = track.samples[0];
