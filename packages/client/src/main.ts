@@ -266,7 +266,7 @@ function freeSpaceShift(): number {
   if (Math.max(above, below) < 110) return 0;
   const y = below >= above ? card.bottom + below / 2 : above / 2;
   // The camera looks a little above and ahead of the car, so aim slightly high.
-  return Math.max(0, Math.abs(y - h / 2) / h - 0.06) * Math.sign(y - h / 2);
+  return Math.max(0, Math.abs(y - h / 2) / h - 0.14) * Math.sign(y - h / 2);
 }
 
 let lastThrottle = 0;
