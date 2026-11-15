@@ -27,10 +27,18 @@ export interface TrackDef {
   width: number;
   wallHeight: number;
   wallThickness: number;
-  /** Centre line samples per control-point segment. */
+  /** Spline resolution per control-point segment (samples are then evened out by distance). */
   samplesPerSegment: number;
   /** 0..1: how much corners are banked (outside edge raised), scaled by how tight they are. */
   banking?: number;
+  /** The track has jumps: steeper ramps and airtime are intended (relaxes validation). */
+  jumps?: boolean;
+  /** Scenery style: open countryside (default) or a city street circuit. */
+  scenery?: 'country' | 'city';
+  /** A covered section, from one control point to another (indices into controlPoints). */
+  tunnel?: [number, number];
+  /** Areas of open water (harbour), as x/z rectangles. Visual only. */
+  water?: { minX: number; maxX: number; minZ: number; maxZ: number }[];
 }
 
 export interface TrackSample extends Vec3 {
@@ -50,6 +58,8 @@ export interface TrackSample extends Vec3 {
 export interface WallSegment extends Vec3 {
   /** Rotation around +Y; the segment's length runs along local +Z. */
   yaw: number;
+  /** Climb angle along the segment (radians, positive = rising in the driving direction). */
+  pitch: number;
   length: number;
 }
 
@@ -62,7 +72,12 @@ export interface Track {
   rightEdge: Vec3[];
   walls: WallSegment[];
   bounds: { minX: number; maxX: number; minZ: number; maxZ: number; maxY: number };
+  /** Covered section as sample indices [from, to] in driving order (may wrap), or null. */
+  tunnel: [number, number] | null;
 }
+
+/** Distance between centre line samples, metres. */
+const SAMPLE_SPACING = 3;
 
 /** Lowest a road edge may sit above y = 0 (the physics ground), metres. */
 const EDGE_CLEARANCE = 0.05;
@@ -96,22 +111,44 @@ function smooth(values: number[], radius: number): number[] {
 }
 
 export function buildTrack(def: TrackDef): Track {
+  // Sample the spline densely, then resample evenly by distance (~SAMPLE_SPACING apart), so
+  // sample density doesn't depend on how far apart the control points are (short segments,
+  // e.g. around a jump, would otherwise pack samples tightly and break windowed lookups).
   const cp = def.controlPoints;
   const n = cp.length;
-  const points: Vec3[] = [];
+  const dense: Vec3[] = [];
+  const perSegment = Math.max(def.samplesPerSegment, 8) * 4;
   for (let i = 0; i < n; i++) {
     const p0 = cp[(i - 1 + n) % n];
     const p1 = cp[i];
     const p2 = cp[(i + 1) % n];
     const p3 = cp[(i + 2) % n];
-    for (let s = 0; s < def.samplesPerSegment; s++) {
-      const t = s / def.samplesPerSegment;
-      points.push({
+    for (let s = 0; s < perSegment; s++) {
+      const t = s / perSegment;
+      dense.push({
         x: catmullRom(p0.x, p1.x, p2.x, p3.x, t),
         z: catmullRom(p0.z, p1.z, p2.z, p3.z, t),
         y: Math.max(0, catmullRom(p0.y ?? 0, p1.y ?? 0, p2.y ?? 0, p3.y ?? 0, t)),
       });
     }
+  }
+  const cumulative = [0];
+  for (let i = 1; i <= dense.length; i++) {
+    const a = dense[i - 1];
+    const b = dense[i % dense.length];
+    cumulative.push(cumulative[i - 1] + Math.hypot(b.x - a.x, b.z - a.z));
+  }
+  const total = cumulative[dense.length];
+  const sampleCount = Math.max(16, Math.round(total / SAMPLE_SPACING));
+  const points: Vec3[] = [];
+  let k = 0;
+  for (let i = 0; i < sampleCount; i++) {
+    const target = (i / sampleCount) * total;
+    while (cumulative[k + 1] < target) k++;
+    const a = dense[k];
+    const b = dense[(k + 1) % dense.length];
+    const f = (target - cumulative[k]) / Math.max(1e-9, cumulative[k + 1] - cumulative[k]);
+    points.push({ x: a.x + (b.x - a.x) * f, y: a.y + (b.y - a.y) * f, z: a.z + (b.z - a.z) * f });
   }
 
   const count = points.length;
@@ -193,7 +230,21 @@ export function buildTrack(def: TrackDef): Track {
     maxY: Math.max(...samples.map((s) => s.y)),
   };
 
-  return { def, samples, length, leftEdge, rightEdge, walls, bounds };
+  const nearest = (p: Vec2) => {
+    let best = 0;
+    let bestD = Infinity;
+    samples.forEach((s, i) => {
+      const d = (s.x - p.x) ** 2 + (s.z - p.z) ** 2;
+      if (d < bestD) {
+        bestD = d;
+        best = i;
+      }
+    });
+    return best;
+  };
+  const tunnel: [number, number] | null = def.tunnel ? [nearest(cp[def.tunnel[0]]), nearest(cp[def.tunnel[1]])] : null;
+
+  return { def, samples, length, leftEdge, rightEdge, walls, bounds, tunnel };
 }
 
 /** One box per edge segment, pushed outward by half the wall thickness, slightly overlapping. */
@@ -212,6 +263,7 @@ function buildWalls(edge: Vec3[], samples: TrackSample[], side: 1 | -1, thicknes
       y: (a.y + b.y) / 2,
       z: (a.z + b.z) / 2 + r.z * out,
       yaw: Math.atan2(dx, dz),
+      pitch: Math.atan2(b.y - a.y, Math.hypot(dx, dz)),
       length: Math.hypot(dx, dz) + thickness,
     });
   }
@@ -259,15 +311,27 @@ export function nearestSampleIndexNear(track: Track, x: number, z: number, hint:
   return best;
 }
 
-/** Starting grid: two columns, staggered behind the start line (sample 0). */
+/**
+ * Starting grid: two columns, staggered behind the start line (sample 0). Slots follow the
+ * road backwards, so the grid stays on the track even if a corner comes just before the line.
+ */
 export function gridSlot(track: Track, slot: number): { x: number; y: number; z: number; yaw: number } {
-  const s0 = track.samples[0];
-  const r = rightOf(s0.tx, s0.tz);
   const back = 8 + Math.floor(slot / 2) * 8 + (slot % 2) * 3;
   const side = slot % 2 === 0 ? -3 : 3;
-  const x = s0.x - s0.tx * back + r.x * side;
-  const z = s0.z - s0.tz * back + r.z * side;
-  return { x, y: roadHeightAt(track, x, z), z, yaw: Math.atan2(s0.tx, s0.tz) };
+  const n = track.samples.length;
+  // Walk back along the centre line until we've covered `back` metres.
+  let i = 0;
+  let covered = 0;
+  while (covered < back) {
+    const prev = (i - 1 + n) % n;
+    covered += Math.hypot(track.samples[i].x - track.samples[prev].x, track.samples[i].z - track.samples[prev].z);
+    i = prev;
+  }
+  const s = track.samples[i];
+  const r = rightOf(s.tx, s.tz);
+  const x = s.x + r.x * side;
+  const z = s.z + r.z * side;
+  return { x, y: roadHeightAt(track, x, z, i), z, yaw: Math.atan2(s.tx, s.tz) };
 }
 
 /**

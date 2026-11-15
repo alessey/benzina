@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, it } from 'vitest';
-import { botInput, buildTrack, initPhysics, nearestSampleIndex, rightOf, roadHeightAt, SimWorld, TRACKS, yawQuat } from '../src';
+import { botInput, buildTrack, CAR_RIDE_HEIGHT, initPhysics, nearestSampleIndex, rightOf, roadHeightAt, SimWorld, TRACKS, yawQuat } from '../src';
 
 beforeAll(async () => {
   await initPhysics();
@@ -43,7 +43,8 @@ describe.each(TRACKS.map((def) => [def.name, def] as const))('%s', (_name, def) 
         `tightest radius ${minRadius.toFixed(0)} m, max bank ${((Math.max(...track.samples.map((s) => Math.abs(s.bank))) * 180) / Math.PI).toFixed(1)}°, ` +
         `crest air above ${(airborne * 3.6).toFixed(0)} km/h`,
     );
-    expect(maxGrade).toBeLessThan(0.12);
+    // Jump tracks have short steep ramps (cars hover high enough to clear ~22%).
+    expect(maxGrade).toBeLessThan(def.jumps ? 0.2 : 0.12);
     expect(minRadius).toBeGreaterThan(14);
     expect(Math.min(...track.samples.map((s) => s.y))).toBeGreaterThanOrEqual(0);
     // Both edges stay above ground even on banked corners (else the ground covers the road).
@@ -81,7 +82,13 @@ describe.each(TRACKS.map((def) => [def.name, def] as const))('%s', (_name, def) 
     }
     sim.free();
     expect(travelled).toBeGreaterThanOrEqual(n);
-    expect(airborne).toBeLessThan(30);
+    if (def.jumps) {
+      console.log(`${def.name}: ${airborne} airborne ticks per lap`);
+      expect(airborne).toBeGreaterThan(30); // the jumps actually launch you
+      expect(airborne).toBeLessThan(150);
+    } else {
+      expect(airborne).toBeLessThan(30);
+    }
     expect(maxDrop).toBeLessThan(0.3); // never sank into the road
     expect(scrapes).toBe(0);
   });
@@ -98,8 +105,11 @@ describe.each(TRACKS.map((def) => [def.name, def] as const))('%s', (_name, def) 
           const r = rightOf(s.tx, s.tz);
           const q = yawQuat(Math.atan2(s.tx, s.tz));
           const off = side * (halfRoad - 3);
+          const x = s.x + r.x * off;
+          const z = s.z + r.z * off;
           car.setState({
-            p: [s.x + r.x * off, s.y + 0.75, s.z + r.z * off],
+            // At the road's height right there (banking raises one side), resting on the spring.
+            p: [x, roadHeightAt(track, x, z) + CAR_RIDE_HEIGHT, z],
             q: [q.x, q.y, q.z, q.w],
             v: [s.tx * speed + r.x * side * speed * 0.7, 0, s.tz * speed + r.z * side * speed * 0.7],
             w: [0, 0, 0],

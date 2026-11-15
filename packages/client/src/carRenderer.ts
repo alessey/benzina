@@ -24,6 +24,7 @@ interface Pose {
 }
 
 interface Entry {
+  id: string;
   view: CarView;
   tag: THREE.Sprite | null;
   prev: Pose;
@@ -108,6 +109,7 @@ export class CarRenderer {
       if (tag) view.group.add(tag);
       this.scene.add(view.group);
       this.entries.set(id, {
+        id,
         view,
         tag,
         prev: { ...pose },
@@ -214,6 +216,16 @@ export class CarRenderer {
    * height gradient under the car gives pitch (along the car) and roll (across it).
    */
   private tiltToRoad(e: Entry, yaw: number, dt: number): void {
+    const car = this.sim.cars.get(e.id);
+    if (car && !car.grounded) {
+      // In the air: the nose follows the flight path (up off the ramp, down toward landing).
+      const v = car.body.linvel();
+      const along = Math.max(5, Math.abs(car.forwardSpeed()));
+      const k = 1 - Math.exp(-6 * dt);
+      e.pitch += (-Math.atan(v.y / along) * 0.8 - e.pitch) * k;
+      e.roll += (0 - e.roll) * k;
+      return;
+    }
     e.sampleHint = nearestSampleIndexNear(this.track, this.tmpPos.x, this.tmpPos.z, e.sampleHint);
     const s = this.track.samples[e.sampleHint];
     const r = rightOf(s.tx, s.tz);

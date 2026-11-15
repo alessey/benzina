@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { nearestSampleIndex, type Track, type Vec3 } from '@benzina/shared';
 
 export interface GameScene {
@@ -22,6 +23,13 @@ const HORIZON = new THREE.Color(0xcfe3f2);
  * cover the road surface (it extends under the whole circuit).
  */
 const FAR_GROUND_Y = -2;
+/** Harbour water surface and the sea bed beneath it. */
+const WATER_Y = -0.7;
+const WATER_FLOOR = -4;
+
+function inWater(track: Track, x: number, z: number): boolean {
+  return (track.def.water ?? []).some((w) => x >= w.minX && x <= w.maxX && z >= w.minZ && z <= w.maxZ);
+}
 const ZENITH = new THREE.Color(0x5d9bd6);
 
 export interface SceneOptions {
@@ -212,8 +220,12 @@ class Terrain {
         // Edges of the terrain fade down to the far ground plane.
         const edge = Math.min(c, r, this.cols - 1 - c, this.rows - 1 - r) * cell;
         const fade = smoothstep(0, 120, edge);
-        const natural = this.hills(x, z) * fade + FAR_GROUND_Y * (1 - fade);
-        const w = smoothstep(hw + 4, hw + 50, d);
+        const wet = inWater(track, x, z);
+        // Countryside rolls; a city climbs the hillside with its streets; the harbour is deep.
+        const land = track.def.scenery === 'city' ? s.y * 0.9 : this.hills(x, z);
+        const natural = wet ? WATER_FLOOR : land * fade + FAR_GROUND_Y * (1 - fade);
+        // At the water's edge the land drops sharply (a quay wall) instead of a long bank.
+        const w = wet ? smoothstep(hw + 2, hw + 9, d) : smoothstep(hw + 4, hw + 50, d);
         this.heights[r * this.cols + c] = nearRoad * (1 - w) + natural * w;
         this.roadDist[r * this.cols + c] = d - hw;
       }
@@ -256,9 +268,10 @@ class Terrain {
     // PlaneGeometry rows run from -z to +z after rotation; map each vertex to our grid.
     const pos = geo.getAttribute('position');
     const colors: number[] = [];
-    const grass = new THREE.Color(0x6f9a45);
-    const grassDark = new THREE.Color(0x587f36);
-    const dirt = new THREE.Color(0x9a8a62);
+    const city = this.track.def.scenery === 'city';
+    const grass = new THREE.Color(city ? 0xbdb4a2 : 0x6f9a45);
+    const grassDark = new THREE.Color(city ? 0xa69d8b : 0x587f36);
+    const dirt = new THREE.Color(city ? 0x8c8a86 : 0x9a8a62);
     const c = new THREE.Color();
     for (let i = 0; i < pos.count; i++) {
       const x = pos.getX(i) + this.minX + ((this.cols - 1) * this.cell) / 2;
@@ -289,8 +302,16 @@ function buildTrackScenery(track: Track, terrain: Terrain): THREE.Group {
   group.add(buildRoad(track));
   for (const curb of buildCurbs(track)) group.add(curb);
   group.add(buildStartLine(track));
+  for (const ramp of buildRampMarkings(track)) group.add(ramp);
   group.add(buildWalls(track));
-  group.add(buildTrees(track, terrain));
+  if (track.def.scenery === 'city') {
+    group.add(buildBuildings(track, terrain));
+  } else {
+    group.add(buildTrees(track, terrain));
+  }
+  for (const water of buildWater(track)) group.add(water);
+  const tunnel = buildTunnel(track);
+  if (tunnel) group.add(tunnel);
   group.add(buildMountains(track));
   return group;
 }
@@ -298,7 +319,8 @@ function buildTrackScenery(track: Track, terrain: Terrain): THREE.Group {
 /** Flat ground beyond the terrain, out to the fog. */
 function buildFarGround(track: Track): THREE.Mesh {
   const b = track.bounds;
-  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(6000, 6000), new THREE.MeshLambertMaterial({ color: 0x6a9442 }));
+  const color = track.def.scenery === 'city' ? 0xb3aa98 : 0x6a9442;
+  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(6000, 6000), new THREE.MeshLambertMaterial({ color }));
   mesh.rotation.x = -Math.PI / 2;
   mesh.position.set((b.minX + b.maxX) / 2, FAR_GROUND_Y, (b.minZ + b.maxZ) / 2);
   mesh.renderOrder = ORDER.terrain;
@@ -369,6 +391,45 @@ function buildCurbs(track: Track): THREE.Mesh[] {
     mesh.renderOrder = ORDER.curb;
     return mesh;
   });
+}
+
+/**
+ * Yellow/black hazard stripes on the approach to each jump lip, so ramps read at speed.
+ * Lips are found from the track itself: a steep climb straight into a drop.
+ */
+function buildRampMarkings(track: Track): THREE.Mesh[] {
+  if (!track.def.jumps) return [];
+  const n = track.samples.length;
+  const at = (i: number) => track.samples[((i % n) + n) % n];
+  const yellow = new THREE.Color(0xf2c41a);
+  const black = new THREE.Color(0x1a1a1a);
+  const meshes: THREE.Mesh[] = [];
+  for (let i = 0; i < n; i++) {
+    const isLip = at(i - 2).slope > 0.08 && at(i + 2).slope < 0 && at(i).y >= at(i - 1).y && at(i).y >= at(i + 1).y;
+    if (!isLip) continue;
+    // Stripes over the last ~12 m of the ramp, inset from the curbs.
+    const from = i - 4;
+    const left = [];
+    const right = [];
+    for (let k = from; k <= i; k++) {
+      const s = at(k);
+      const l = track.leftEdge[((k % n) + n) % n];
+      const r = track.rightEdge[((k % n) + n) % n];
+      const inset = 1.3 / (track.def.width);
+      left.push({ x: l.x + (r.x - l.x) * inset, y: l.y + (r.y - l.y) * inset, z: l.z + (r.z - l.z) * inset });
+      right.push({ x: r.x + (l.x - r.x) * inset, y: r.y + (l.y - r.y) * inset, z: r.z + (l.z - r.z) * inset });
+      void s;
+    }
+    // stripGeometry closes the loop; build an open strip by trimming the wrap-around quad.
+    const geo = stripGeometry(left, right, 0.05, (q) => (q % 2 === 0 ? yellow : black));
+    const index = geo.getIndex()!;
+    geo.setIndex(Array.from(index.array).slice(0, (left.length - 1) * 6));
+    const mesh = new THREE.Mesh(geo, surfaceMaterial(2, { vertexColors: true }));
+    mesh.receiveShadow = true;
+    mesh.renderOrder = ORDER.curb;
+    meshes.push(mesh);
+  }
+  return meshes;
 }
 
 function buildStartLine(track: Track): THREE.Mesh {
@@ -442,9 +503,11 @@ function buildWalls(track: Track): THREE.InstancedMesh {
   );
   const m = new THREE.Matrix4();
   const q = new THREE.Quaternion();
-  const up = new THREE.Vector3(0, 1, 0);
+  const e = new THREE.Euler(0, 0, 0, 'YXZ');
   track.walls.forEach((w, i) => {
-    q.setFromAxisAngle(up, w.yaw);
+    // Tilted to the road's slope so walls run smoothly up ramps instead of stepping.
+    // (Rotation about local +X tips +Z down, so climbing is a negative angle.)
+    q.setFromEuler(e.set(-w.pitch, w.yaw, 0));
     m.compose(new THREE.Vector3(w.x, w.y + (wallHeight - below) / 2, w.z), q, new THREE.Vector3(1, 1, w.length));
     mesh.setMatrixAt(i, m);
   });
@@ -662,5 +725,198 @@ function buildGrandstand(track: Track, terrain: Terrain): THREE.Group {
   group.position.set(cx, base, cz);
   // Face the track: the stand's front (-z) toward the road.
   group.rotation.y = Math.atan2(r.x, r.z);
+  return group;
+}
+
+function buildWater(track: Track): THREE.Mesh[] {
+  const mat = new THREE.MeshStandardMaterial({ color: 0x23668f, roughness: 0.25, metalness: 0.35 });
+  return (track.def.water ?? []).map((w) => {
+    const mesh = new THREE.Mesh(new THREE.PlaneGeometry(w.maxX - w.minX, w.maxZ - w.minZ), mat);
+    mesh.rotation.x = -Math.PI / 2;
+    mesh.position.set((w.minX + w.maxX) / 2, WATER_Y, (w.minZ + w.maxZ) / 2);
+    mesh.receiveShadow = true;
+    return mesh;
+  });
+}
+
+/** One window cell, tiled across building faces and tinted per building. */
+function windowTexture(): THREE.Texture {
+  const c = document.createElement('canvas');
+  c.width = c.height = 64;
+  const ctx = c.getContext('2d')!;
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, 64, 64);
+  ctx.fillStyle = '#5b6b7c';
+  ctx.fillRect(14, 12, 36, 34);
+  ctx.fillStyle = 'rgba(255,255,255,0.25)';
+  ctx.fillRect(14, 12, 36, 6);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  return tex;
+}
+
+/**
+ * City blocks lining the circuit: boxes of varied size and pastel colour, windows tiled to
+ * their real size, all merged into a single mesh (one draw call, for phones).
+ */
+function buildBuildings(track: Track, terrain: Terrain): THREE.Mesh {
+  const rand = mulberry32(911);
+  const hw = track.def.width / 2;
+  const n = track.samples.length;
+  const palette = [0xf2e3c6, 0xe9c9a8, 0xf4f0e8, 0xe7b9a0, 0xd9d2c0, 0xf0d9a6, 0xc9d6dc];
+  const placed: { x: number; z: number; r: number }[] = [];
+  const geos: THREE.BufferGeometry[] = [];
+  const tint = new THREE.Color();
+  const clearOfRoad = (x: number, z: number) => {
+    const s = track.samples[nearestSampleIndex(track, x, z)];
+    return Math.hypot(s.x - x, s.z - z) > hw + 2;
+  };
+  const inTunnel = (i: number) => {
+    if (!track.tunnel) return false;
+    const [a, b] = track.tunnel;
+    return a <= b ? i >= a - 3 && i <= b + 3 : i >= a - 3 || i <= b + 3;
+  };
+
+  for (let i = 0; i < n; i += 3) {
+    if (inTunnel(i)) continue;
+    const s = track.samples[i];
+    const r = { x: -s.tz, z: s.tx };
+    for (const side of [-1, 1]) {
+      if (rand() < 0.25) continue;
+      const width = 8 + rand() * 8; // along the street
+      const depth = 8 + rand() * 6;
+      const height = 7 + rand() * (s.y > 6 ? 22 : 14);
+      const off = side * (hw + 3.2 + depth / 2);
+      const cx = s.x + r.x * off;
+      const cz = s.z + r.z * off;
+      const radius = Math.hypot(width, depth) / 2;
+      // Footprint must be clear of every part of the road, the harbour, and other blocks.
+      const corners = [
+        [width / 2, depth / 2],
+        [-width / 2, depth / 2],
+        [width / 2, -depth / 2],
+        [-width / 2, -depth / 2],
+      ].map(([a, b]) => [cx + s.tx * a + r.x * b, cz + s.tz * a + r.z * b]);
+      if (!corners.every(([x, z]) => clearOfRoad(x, z) && !inWater(track, x, z))) continue;
+      if (placed.some((p) => Math.hypot(p.x - cx, p.z - cz) < p.r + radius * 0.8)) continue;
+      placed.push({ x: cx, z: cz, r: radius });
+
+      const geo = new THREE.BoxGeometry(width, height, depth);
+      // Windows at a real-world size (one per 4 m × 3.5 m); roofs sample the plain wall.
+      const uv = geo.getAttribute('uv');
+      const normal = geo.getAttribute('normal');
+      for (let k = 0; k < uv.count; k++) {
+        const nx = Math.abs(normal.getX(k));
+        const ny = Math.abs(normal.getY(k));
+        if (ny > 0.5) uv.setXY(k, 0.02, 0.02);
+        else uv.setXY(k, uv.getX(k) * ((nx > 0.5 ? depth : width) / 4), uv.getY(k) * (height / 3.5));
+      }
+      const colors = new Float32Array(uv.count * 3);
+      tint.set(palette[Math.floor(rand() * palette.length)]);
+      for (let k = 0; k < uv.count; k++) colors.set([tint.r, tint.g, tint.b], k * 3);
+      geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+      const base = terrain.heightAt(cx, cz) - 1;
+      geo.rotateY(Math.atan2(s.tx, s.tz));
+      geo.translate(cx, base + height / 2, cz);
+      geos.push(geo);
+    }
+  }
+  const mesh = new THREE.Mesh(
+    geos.length ? mergeGeometries(geos) : new THREE.BufferGeometry(),
+    new THREE.MeshLambertMaterial({ map: windowTexture(), vertexColors: true }),
+  );
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  for (const g of geos) g.dispose();
+  return mesh;
+}
+
+/** Vertical ribbon between two polylines (bottom and top), visible from both sides. */
+function ribbon(bottom: Vec3[], top: Vec3[]): THREE.BufferGeometry {
+  const pos: number[] = [];
+  const idx: number[] = [];
+  for (let i = 0; i < bottom.length; i++) {
+    pos.push(bottom[i].x, bottom[i].y, bottom[i].z, top[i].x, top[i].y, top[i].z);
+    if (i < bottom.length - 1) {
+      const a = i * 2;
+      idx.push(a, a + 2, a + 1, a + 1, a + 2, a + 3);
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setIndex(idx);
+  g.computeVertexNormals();
+  return g;
+}
+
+/**
+ * The covered section: side walls up from the barriers, a ceiling with lights, and a roof
+ * slab, following the road's curve and slope. Visual only (cars can't leave the road there).
+ * The roof casts the sun's shadow, so it's properly dim inside.
+ */
+function buildTunnel(track: Track): THREE.Group | null {
+  if (!track.tunnel) return null;
+  const n = track.samples.length;
+  const [a, b] = track.tunnel;
+  const indices: number[] = [];
+  for (let i = a; ; i = (i + 1) % n) {
+    indices.push(i);
+    if (i === b || indices.length > n) break;
+  }
+  const height = 6;
+  const slab = 1;
+  const thick = 1.2;
+  const at = (edge: Vec3[], i: number, out: number, up: number): Vec3 => {
+    const s = track.samples[i];
+    const e = edge[i];
+    const dx = e.x - s.x;
+    const dz = e.z - s.z;
+    const len = Math.hypot(dx, dz) || 1;
+    return { x: e.x + (dx / len) * out, y: s.y + up, z: e.z + (dz / len) * out };
+  };
+  const line = (edge: Vec3[], out: number, up: number) => indices.map((i) => at(edge, i, out, up));
+  const wallTop = track.def.wallHeight;
+
+  const inner = new THREE.MeshLambertMaterial({ color: 0x8f887c, side: THREE.DoubleSide });
+  const outer = new THREE.MeshLambertMaterial({ color: 0xd8d0c0, side: THREE.DoubleSide });
+  const group = new THREE.Group();
+  const add = (geo: THREE.BufferGeometry, mat: THREE.Material) => {
+    const m = new THREE.Mesh(geo, mat);
+    m.castShadow = true;
+    m.receiveShadow = true;
+    group.add(m);
+  };
+  for (const edge of [track.leftEdge, track.rightEdge]) {
+    // Inner face, above the barrier, up to the ceiling.
+    add(ribbon(line(edge, 0, wallTop), line(edge, 0, height)), inner);
+    // Outer face, from the ground to the top of the roof slab.
+    add(ribbon(line(edge, thick, -0.6), line(edge, thick, height + slab)), outer);
+    // Top of the side wall between inner and outer faces.
+    add(ribbon(line(edge, 0, height), line(edge, thick, height)), outer);
+  }
+  // Ceiling and roof.
+  add(ribbon(line(track.leftEdge, 0, height), line(track.rightEdge, 0, height)), inner);
+  add(ribbon(line(track.leftEdge, thick, height + slab), line(track.rightEdge, thick, height + slab)), outer);
+
+  // Portal headers at each end, and ceiling lights down the middle.
+  const header = new THREE.MeshLambertMaterial({ color: 0xb8ab94 });
+  for (const i of [indices[0], indices[indices.length - 1]]) {
+    const s = track.samples[i];
+    const beam = new THREE.Mesh(new THREE.BoxGeometry(track.def.width + thick * 2 + 0.6, slab + 0.6, 0.8), header);
+    beam.position.set(s.x, s.y + height + slab / 2, s.z);
+    beam.rotation.y = Math.atan2(s.tx, s.tz);
+    beam.castShadow = true;
+    group.add(beam);
+  }
+  const lamp = new THREE.MeshStandardMaterial({ color: 0xfff3d0, emissive: 0xffe9b0, emissiveIntensity: 1.6 });
+  const lampGeo = new THREE.BoxGeometry(0.5, 0.08, 1.6);
+  for (let k = 0; k < indices.length; k += 2) {
+    const s = track.samples[indices[k]];
+    const m = new THREE.Mesh(lampGeo, lamp);
+    m.position.set(s.x, s.y + height - 0.05, s.z);
+    m.rotation.y = Math.atan2(s.tx, s.tz);
+    group.add(m);
+  }
   return group;
 }

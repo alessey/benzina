@@ -1,10 +1,16 @@
 import { RAPIER } from './physics';
-import { CAR_RIDE_HEIGHT, CAR_SHAPE, SUSPENSION_TRAVEL, type CarTuning } from './config';
+import { CAR_RIDE_HEIGHT, CAR_SHAPE, HOVER_CLEARANCE, SUSPENSION_TRAVEL, type CarTuning } from './config';
 import type { CarInput } from './input';
 import { type CarState, yawOf, yawQuat } from './state';
 import { nearestSampleIndex, nearestSampleIndexNear, rightOf, roadHeightAt, type Track } from './track';
 
 const FALL_RESET_Y = -10;
+/** Fastest a car may rise away from the road while its wheels are on it, beyond the road's own rise (m/s). */
+const MAX_HOP_SPEED = 3;
+/** How far the road can fall away (m) before the car stops counting as on the ground. */
+const WHEELS_DOWN_SLACK = 0.12;
+/** Suspension compression (m) at which the landing bump-stop engages; normal hills stay below. */
+const BUMP_STOP = HOVER_CLEARANCE * 0.6;
 /** Below this speed (m/s) yaw stability returns in full, so spins always wind down. */
 const SPIN_FADE_SPEED = 20;
 /** How fast `upset` fades (per second) once the tyres grip again, and while still sliding. */
@@ -123,11 +129,13 @@ export class Car {
       true,
       RAPIER.QueryFilterFlags.EXCLUDE_DYNAMIC,
     );
-    this.grounded = hit !== null;
     let vy = v.y;
 
     const w = this.body.angvel();
     let yawRate = w.y;
+
+    // Wheels count as on the road when within a few centimetres of their resting height.
+    this.grounded = hit !== null && hit.timeOfImpact < CAR_RIDE_HEIGHT + WHEELS_DOWN_SLACK;
 
     if (hit) {
       // Hover spring. Rapier applies gravity during the step, so add it back here: at rest
@@ -138,8 +146,21 @@ export class Car {
       const under = this.track.samples[this.sampleHint];
       const roadVy = under.slope * (v.x * under.tx + v.z * under.tz);
       const compression = CAR_RIDE_HEIGHT - hit.timeOfImpact;
-      vy += (t.gravity + t.suspensionStiffness * compression - t.suspensionDamping * (vy - roadVy)) * dt;
+      // Suspension can only push: when the road drops away faster than gravity pulls the car
+      // down (a jump lip, a sharp crest), there's no force at all and the car flies.
+      const support = t.gravity + t.suspensionStiffness * compression - t.suspensionDamping * (vy - roadVy);
+      if (support > 0) vy += support * dt;
+      // Bump-stop: deep in the travel (a hard landing), stop sinking toward the road rather than
+      // letting the body hit it. Body-road contact is solver state that snapshots can't
+      // restore, so it would also make landings mispredict.
+      if (compression > BUMP_STOP && vy < roadVy) vy = roadVy;
+      // Nothing launches a car off the road faster than the road itself rises (plus a little):
+      // ramps still fling you (that's roadVy), but a car squeezed into the road surface in a
+      // crash gets eased out instead of being shot into the air by the contact solver.
+      if (this.grounded) vy = Math.min(vy, roadVy + MAX_HOP_SPEED);
+    }
 
+    if (this.grounded) {
       const throttle = clamp(input.throttle, -1, 1);
       if (throttle > 0) {
         if (vF < -0.5) {

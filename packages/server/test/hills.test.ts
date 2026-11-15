@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, it } from 'vitest';
-import { botInput, buildTrack, COLLINE, initPhysics, SERPENTE, type Car } from '@benzina/shared';
+import { botInput, buildTrack, COLLINE, IL_SALTO, initPhysics, SERPENTE, type Car } from '@benzina/shared';
 import { runScenario, stats } from './harness';
 
 beforeAll(async () => {
@@ -9,6 +9,7 @@ beforeAll(async () => {
 describe.each([
   ['Colline', COLLINE],
   ['Il Serpente', SERPENTE],
+  ['Il Salto (jumps)', IL_SALTO],
 ] as const)('netcode over the hills of %s', (_name, def) => {
   const track = buildTrack(def);
   const racer = (car: Car) => botInput(car, track);
