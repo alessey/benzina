@@ -156,6 +156,12 @@ export class CarView {
       this.wheels.push(wheel);
       if (front) this.frontPivots.push(pivot);
     }
+
+    // When faded (transparent), the body is drawn first and still writes depth, so it hides
+    // the wheels behind it; otherwise a faded car looks like an X-ray with its wheels inside.
+    this.body.traverse((o) => (o.renderOrder = 1));
+    for (const p of this.frontPivots) p.traverse((o) => (o.renderOrder = 2));
+    for (const w of this.wheels) w.traverse((o) => (o.renderOrder = 2));
   }
 
   /**
@@ -183,7 +189,6 @@ export class CarView {
     for (const m of this.fadeMats) {
       m.transparent = alpha < 0.99;
       m.opacity = alpha;
-      m.depthWrite = alpha >= 0.99;
     }
   }
 }

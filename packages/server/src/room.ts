@@ -1,6 +1,7 @@
 import {
   Race,
   botInput,
+  pickBotName,
   decodeInput,
   encodeSnapshot,
   NEUTRAL_INPUT,
@@ -359,7 +360,8 @@ export class Room {
   private addBot(): void {
     const id = this.freeId(FIRST_BOT_ID);
     const slot = this.freeSlot();
-    const info: PlayerInfo = { id, name: `Bot ${id - FIRST_BOT_ID + 1}`, bot: true };
+    const taken = [...this.players.values(), ...this.bots.values()].map((p) => p.info.name);
+    const info: PlayerInfo = { id, name: pickBotName(taken, this.code.charCodeAt(0) + id), bot: true };
     this.sim.addCar(String(id), slot);
     this.bots.set(id, { info, slot, lastInput: NEUTRAL_INPUT });
   }

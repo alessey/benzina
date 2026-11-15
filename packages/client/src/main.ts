@@ -6,6 +6,7 @@ import { CarView } from './carView';
 import { ChaseCamera } from './chaseCamera';
 import { DebugOverlay } from './debugOverlay';
 import { Effects } from './effects';
+import { Minimap } from './minimap';
 import { enterFullscreenLandscape, fullscreenSupported, keepScreenAwake, preventBrowserGestures } from './device';
 import { InputManager, IS_TOUCH_DEVICE } from './input';
 import { AdaptiveResolution } from './quality';
@@ -186,6 +187,7 @@ session.onTrackChange = () => {
   devHooks.corrections.length = 0;
 };
 const debug = new DebugOverlay(scene, params.has('debug'));
+const minimap = new Minimap(IS_TOUCH_DEVICE ? 112 : 160);
 
 async function invite(): Promise<void> {
   if (!online) return;
@@ -443,6 +445,10 @@ function frame(now: number): void {
     practice: { current: practiceLaps.current(session.tick), last: practiceLaps.lastLap, best: practiceLaps.bestLap },
     trackId: session.track.def.id,
   });
+
+  // Phones: the lobby/results card would cover the map, so show it only while racing there.
+  minimap.visible = !IS_TOUCH_DEVICE || race.phase === 'countdown' || race.phase === 'racing';
+  minimap.update(session.sim, session.localId);
 
   debug.updateGhosts(online?.lastSnapshot ?? null);
   debug.update({

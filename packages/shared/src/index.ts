@@ -10,3 +10,4 @@ export * from './protocol';
 export { Predictor, type Correction } from './predictor';
 export * from './race';
 export * from './tracks';
+export * from './names';

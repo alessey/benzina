@@ -561,3 +561,20 @@ body.touch #mute {
 body.menu #mute {
   display: none;
 }
+
+#minimap {
+  position: absolute;
+  left: var(--safe-left);
+  bottom: calc(var(--safe-bottom) + 46px);
+}
+/* Phones: top-right, just left of the button column (bottom-left is the steering zone). */
+body.touch #minimap {
+  left: auto;
+  bottom: auto;
+  top: var(--safe-top);
+  right: calc(var(--safe-right) + 52px);
+}
+/* Phones: keep the lobby/results card clear of the button column on the right. */
+body.touch #race-panel {
+  width: min(420px, calc(100vw - 2 * (var(--safe-right) + 56px)));
+}

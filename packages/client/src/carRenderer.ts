@@ -11,6 +11,11 @@ const SNAP_DISTANCE = 6;
 const LOCAL_COLOR = 0xd8262e;
 const OTHER_COLORS = [0x2e6fd8, 0xf2b705, 0x2fa84f, 0x9b3fd1, 0xf27405, 0x1fb5b5, 0xe8e8e8, 0xff7ab8];
 
+/** Paint colour for a car (also used by the track map). */
+export function carColor(id: string, local: boolean): number {
+  return local ? LOCAL_COLOR : OTHER_COLORS[(Number(id) || 0) % OTHER_COLORS.length];
+}
+
 interface Pose {
   x: number;
   y: number;
@@ -96,7 +101,7 @@ export class CarRenderer {
       const local = id === this.localId();
       const n = Number(id) || 0;
       const view = new CarView(
-        local ? LOCAL_COLOR : OTHER_COLORS[n % OTHER_COLORS.length],
+        carColor(id, local),
         local ? 'gt' : BODY_STYLES[(n * 7 + 1) % BODY_STYLES.length],
       );
       const tag = local ? null : nameTag(this.nameOf(id));

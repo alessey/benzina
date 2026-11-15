@@ -1,6 +1,7 @@
 import {
   botInput,
   buildTrack,
+  pickBotName,
   DT,
   trackById,
   NEUTRAL_INPUT,
@@ -76,7 +77,8 @@ export class OfflineSession implements Session {
     for (let i = 0; i < Math.min(7, bots); i++) {
       const id = String(100 + i);
       this.botIds.push(id);
-      this.players.set(id, { id: 100 + i, name: `Bot ${i + 1}`, bot: true });
+      const taken = [...this.players.values()].map((p) => p.name);
+      this.players.set(id, { id: 100 + i, name: pickBotName(taken, Math.floor(Math.random() * 1000)), bot: true });
     }
     [this.sim, this.raceLogic] = this.buildWorld(track, tuning);
   }
