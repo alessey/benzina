@@ -1,10 +1,9 @@
 import { RAPIER } from './physics';
-import { CAR_RIDE_HEIGHT, CAR_SHAPE, type CarTuning } from './config';
+import { CAR_RIDE_HEIGHT, CAR_SHAPE, SUSPENSION_TRAVEL, type CarTuning } from './config';
 import type { CarInput } from './input';
 import { type CarState, yawOf, yawQuat } from './state';
 import { nearestSampleIndex, type Track } from './track';
 
-const GROUND_RAY_SLACK = 0.25;
 const FALL_RESET_Y = -10;
 
 function clamp(v: number, lo: number, hi: number): number {
@@ -18,9 +17,10 @@ function approach(current: number, target: number, maxDelta: number): number {
 }
 
 /**
- * Arcade car: a single rigid body whose roll and pitch are locked, sliding with zero friction.
- * Rapier handles gravity and collisions; each tick we rewrite the car's velocity
- * to get the handling we want (acceleration, grip, steering). That keeps the networked state
+ * Arcade car: a single rigid body whose roll and pitch are locked, hovering on a raycast
+ * spring just above the road. Rapier handles gravity and collisions (walls, other cars);
+ * each tick we rewrite the car's velocity to get the handling we want
+ * (suspension, acceleration, grip, steering). That keeps the networked state
  * small (one body plus a steering value), which is what makes prediction and
  * reconciliation tractable.
  */
@@ -40,7 +40,7 @@ export class Car {
     yaw: number,
   ) {
     const bodyDesc = RAPIER.RigidBodyDesc.dynamic()
-      .setTranslation(x, CAR_RIDE_HEIGHT + 0.05, z)
+      .setTranslation(x, CAR_RIDE_HEIGHT, z)
       .setRotation(yawQuat(yaw))
       .enabledRotations(false, true, false)
       .setCcdEnabled(true)
@@ -90,16 +90,22 @@ export class Car {
     const ray = new RAPIER.Ray(pos, { x: 0, y: -1, z: 0 });
     const hit = this.world.castRay(
       ray,
-      CAR_RIDE_HEIGHT + GROUND_RAY_SLACK,
+      CAR_RIDE_HEIGHT + SUSPENSION_TRAVEL,
       true,
       RAPIER.QueryFilterFlags.EXCLUDE_DYNAMIC,
     );
     this.grounded = hit !== null;
+    let vy = v.y;
 
     const w = this.body.angvel();
     let yawRate = w.y;
 
-    if (this.grounded) {
+    if (hit) {
+      // Hover spring. Rapier applies gravity during the step, so add it back here:
+      // at rest height the spring exactly cancels gravity.
+      const compression = CAR_RIDE_HEIGHT - hit.timeOfImpact;
+      vy += (t.gravity + t.suspensionStiffness * compression - t.suspensionDamping * vy) * dt;
+
       const throttle = clamp(input.throttle, -1, 1);
       if (throttle > 0) {
         if (vF < -0.5) {
@@ -132,7 +138,7 @@ export class Car {
         -this.steer * t.maxYawRate * lowSpeedFactor * highSpeedFactor * boost * Math.sign(vF);
       yawRate += (targetYawRate - yawRate) * (1 - Math.exp(-t.yawResponse * dt));
 
-      this.body.setLinvel({ x: fx * vF + rx * vL, y: v.y, z: fz * vF + rz * vL }, true);
+      this.body.setLinvel({ x: fx * vF + rx * vL, y: vy, z: fz * vF + rz * vL }, true);
     } else {
       // Airborne: no control, spin slowly bleeds off.
       yawRate *= Math.exp(-2 * dt);
@@ -144,7 +150,7 @@ export class Car {
   resetToTrack(): void {
     const pos = this.body.translation();
     const s = this.track.samples[nearestSampleIndex(this.track, pos.x, pos.z)];
-    this.body.setTranslation({ x: s.x, y: CAR_RIDE_HEIGHT + 0.5, z: s.z }, true);
+    this.body.setTranslation({ x: s.x, y: CAR_RIDE_HEIGHT + 0.3, z: s.z }, true);
     this.body.setRotation(yawQuat(Math.atan2(s.tx, s.tz)), true);
     this.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
     this.body.setAngvel({ x: 0, y: 0, z: 0 }, true);

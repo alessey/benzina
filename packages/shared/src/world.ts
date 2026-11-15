@@ -40,6 +40,10 @@ export class SimWorld {
           .setRestitution(0.3),
       );
     }
+
+    // Rapier builds its query acceleration structure during step(). Step once with only
+    // static geometry so ground raycasts work from the very first real tick.
+    this.world.step();
   }
 
   /** Add a car on the starting grid. */

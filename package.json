@@ -6,10 +6,13 @@
     "packages/*"
   ],
   "scripts": {
-    "dev": "npm run dev -w @benzina/client",
+    "dev": "node scripts/dev.mjs",
     "build": "npm run build -w @benzina/client",
     "test": "vitest run",
-    "typecheck": "tsc -p packages/shared && tsc -p packages/client"
+    "typecheck": "tsc -p packages/shared && tsc -p packages/server && tsc -p packages/client",
+    "dev:client": "npm run dev -w @benzina/client",
+    "dev:server": "npm run dev -w @benzina/server",
+    "bots": "npm run bots -w @benzina/server --"
   },
   "devDependencies": {
     "typescript": "7.0.2",

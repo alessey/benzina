@@ -6,3 +6,5 @@ export { initPhysics } from './physics';
 export { Car } from './car';
 export { botInput } from './bot';
 export { SimWorld } from './world';
+export * from './protocol';
+export { Predictor, type Correction } from './predictor';

@@ -10,12 +10,27 @@ export interface GameScene {
 
 const SKY = 0x9cc7e8;
 
+/**
+ * The ground and the flat layers painted on it (road, curbs, start line) are drawn first, in
+ * layer order, without writing depth. Depth-testing coplanar layers z-fights on GPUs with
+ * 16-bit depth buffers (common on mobile); since everything else sits above them, they never
+ * need to hide anything.
+ */
+function layerMaterial(params: THREE.MeshLambertMaterialParameters): THREE.MeshLambertMaterial {
+  return new THREE.MeshLambertMaterial({ ...params, depthWrite: false });
+}
+
+function asLayer<T extends THREE.Mesh>(mesh: T, layer: number): T {
+  mesh.renderOrder = layer - 10;
+  return mesh;
+}
+
 export function createScene(track: Track): GameScene {
   const renderer = new THREE.WebGLRenderer({ antialias: true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   renderer.setSize(window.innerWidth, window.innerHeight);
   renderer.shadowMap.enabled = true;
-  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  renderer.shadowMap.type = THREE.PCFShadowMap;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   document.body.appendChild(renderer.domElement);
 
@@ -23,7 +38,9 @@ export function createScene(track: Track): GameScene {
   scene.background = new THREE.Color(SKY);
   scene.fog = new THREE.Fog(SKY, 150, 600);
 
-  const camera = new THREE.PerspectiveCamera(65, window.innerWidth / window.innerHeight, 0.1, 1500);
+  // A near plane of 0.5 m (the camera never gets closer to anything) keeps depth precision
+  // high enough that flat road layers don't z-fight with the ground in the distance.
+  const camera = new THREE.PerspectiveCamera(65, window.innerWidth / window.innerHeight, 0.5, 1500);
   window.addEventListener('resize', () => {
     camera.aspect = window.innerWidth / window.innerHeight;
     camera.updateProjectionMatrix();
@@ -44,17 +61,15 @@ export function createScene(track: Track): GameScene {
   sun.shadow.bias = -0.0005;
   scene.add(sun, sun.target);
 
-  const ground = new THREE.Mesh(
-    new THREE.PlaneGeometry(4000, 4000),
-    new THREE.MeshLambertMaterial({ color: 0x6f9a45 }),
-  );
+  const ground = new THREE.Mesh(new THREE.PlaneGeometry(4000, 4000), layerMaterial({ color: 0x6f9a45 }));
+  asLayer(ground, 0);
   ground.rotation.x = -Math.PI / 2;
   ground.receiveShadow = true;
   scene.add(ground);
 
-  scene.add(buildRoad(track));
-  scene.add(buildCurbs(track));
-  scene.add(buildStartLine(track));
+  scene.add(asLayer(buildRoad(track), 1));
+  for (const curb of buildCurbs(track)) scene.add(asLayer(curb, 2));
+  scene.add(asLayer(buildStartLine(track), 3));
   scene.add(buildWalls(track));
   scene.add(buildTrees(track));
 
@@ -97,7 +112,7 @@ function stripGeometry(a: Vec2[], b: Vec2[], y: number, colorOf?: (i: number) =>
 function buildRoad(track: Track): THREE.Mesh {
   const mesh = new THREE.Mesh(
     stripGeometry(track.leftEdge, track.rightEdge, 0.01),
-    new THREE.MeshLambertMaterial({ color: 0x3d3f44 }),
+    layerMaterial({ color: 0x3d3f44 }),
   );
   mesh.receiveShadow = true;
   return mesh;
@@ -114,18 +129,17 @@ function offsetEdge(track: Track, edge: Vec2[], amount: number): Vec2[] {
   });
 }
 
-function buildCurbs(track: Track): THREE.Group {
+/** One mesh per side. Returned as plain meshes (not a Group) so render ordering applies to each. */
+function buildCurbs(track: Track): THREE.Mesh[] {
   const red = new THREE.Color(0xd23a2e);
   const white = new THREE.Color(0xf2f2f2);
   const stripe = (i: number) => (Math.floor(i / 2) % 2 === 0 ? red : white);
-  const mat = new THREE.MeshLambertMaterial({ vertexColors: true });
-  const group = new THREE.Group();
-  for (const edge of [track.leftEdge, track.rightEdge]) {
+  const mat = layerMaterial({ vertexColors: true });
+  return [track.leftEdge, track.rightEdge].map((edge) => {
     const mesh = new THREE.Mesh(stripGeometry(edge, offsetEdge(track, edge, 0.9), 0.02, stripe), mat);
     mesh.receiveShadow = true;
-    group.add(mesh);
-  }
-  return group;
+    return mesh;
+  });
 }
 
 function buildStartLine(track: Track): THREE.Mesh {
@@ -145,7 +159,7 @@ function buildStartLine(track: Track): THREE.Mesh {
   const s0 = track.samples[0];
   const mesh = new THREE.Mesh(
     new THREE.PlaneGeometry(track.def.width, track.def.width / 4),
-    new THREE.MeshLambertMaterial({ map: tex }),
+    layerMaterial({ map: tex }),
   );
   mesh.rotation.order = 'YXZ';
   mesh.rotation.y = Math.atan2(s0.tx, s0.tz);

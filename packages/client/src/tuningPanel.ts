@@ -18,42 +18,60 @@ const RANGES: Record<keyof CarTuning, [number, number, number]> = {
   handbrakeYawBoost: [1, 3, 0.05],
   steerSpeed: [1, 30, 0.5],
   yawResponse: [1, 40, 0.5],
+  suspensionStiffness: [50, 1000, 10],
+  suspensionDamping: [0, 80, 1],
 };
 
 const STORAGE_KEY = 'benzina.tuning';
 
-/** Dev panel for live handling tweaks. Values persist in localStorage. */
-export function createTuningPanel(tuning: CarTuning): void {
-  try {
-    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? 'null');
-    if (saved) Object.assign(tuning, pick(saved));
-  } catch {
-    // Ignore unreadable storage.
+export interface TuningPanelOptions {
+  /** Offline: remember tweaks in localStorage. Online the server owns tuning. */
+  persist: boolean;
+  /** Called after any change (online: forward to the server). */
+  onChange?: (tuning: CarTuning) => void;
+}
+
+/** Dev panel for live handling tweaks. Returns a function that refreshes the displayed values. */
+export function createTuningPanel(tuning: CarTuning, opts: TuningPanelOptions): () => void {
+  if (opts.persist) {
+    try {
+      const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? 'null');
+      if (saved) Object.assign(tuning, pick(saved));
+    } catch {
+      // Ignore unreadable storage.
+    }
   }
 
-  const gui = new GUI({ title: 'Handling (dev)' });
+  const gui = new GUI({ title: opts.persist ? 'Handling (dev)' : 'Handling (dev, shared with room)' });
   gui.close();
-  const save = () => {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(tuning));
-    } catch {
-      // Ignore unavailable storage.
+  const changed = () => {
+    if (opts.persist) {
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(tuning));
+      } catch {
+        // Ignore unavailable storage.
+      }
     }
+    opts.onChange?.(tuning);
   };
   for (const key of Object.keys(RANGES) as (keyof CarTuning)[]) {
     const [min, max, step] = RANGES[key];
-    gui.add(tuning, key, min, max, step).onChange(save);
+    gui.add(tuning, key, min, max, step).onFinishChange(changed);
   }
-  gui.add(
-    {
-      reset: () => {
-        Object.assign(tuning, DEFAULT_TUNING);
-        gui.controllersRecursive().forEach((c) => c.updateDisplay());
-        save();
+  const refresh = () => gui.controllersRecursive().forEach((c) => c.updateDisplay());
+  gui
+    .add(
+      {
+        reset: () => {
+          Object.assign(tuning, DEFAULT_TUNING);
+          refresh();
+          changed();
+        },
       },
-    },
-    'reset',
-  ).name('Reset to defaults');
+      'reset',
+    )
+    .name('Reset to defaults');
+  return refresh;
 }
 
 function pick(obj: Record<string, unknown>): Partial<CarTuning> {

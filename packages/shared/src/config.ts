@@ -37,6 +37,10 @@ export interface CarTuning {
   steerSpeed: number;
   /** How fast the actual yaw rate converges on the target (1/s). Lower = collisions spin you more. */
   yawResponse: number;
+  /** Hover suspension spring, as acceleration per metre of compression (1/s²). */
+  suspensionStiffness: number;
+  /** Hover suspension damping (1/s). ~2·√stiffness is critically damped. */
+  suspensionDamping: number;
 }
 
 export const DEFAULT_TUNING: CarTuning = {
@@ -56,6 +60,8 @@ export const DEFAULT_TUNING: CarTuning = {
   handbrakeYawBoost: 1.5,
   steerSpeed: 6,
   yawResponse: 12,
+  suspensionStiffness: 300,
+  suspensionDamping: 32,
 };
 
 /** Car collision box, metres. Collider is a rounded cuboid: half extents + border radius. */
@@ -69,4 +75,18 @@ export const CAR_SHAPE = {
 } as const;
 
 /** Distance from the car's centre to the bottom of its collider. */
-export const CAR_RIDE_HEIGHT = CAR_SHAPE.halfHeight + CAR_SHAPE.borderRadius;
+export const CAR_HALF_HEIGHT = CAR_SHAPE.halfHeight + CAR_SHAPE.borderRadius;
+
+/**
+ * Cars hover: a raycast spring holds the collider this far above the road, so normal driving
+ * never touches Rapier's contact solver. Contact state is history-dependent and can't be
+ * restored from a snapshot; the spring depends only on position and velocity, so client
+ * re-simulation matches the server.
+ */
+export const HOVER_CLEARANCE = 0.12;
+
+/** Height of the car's centre above flat ground at rest. */
+export const CAR_RIDE_HEIGHT = CAR_HALF_HEIGHT + HOVER_CLEARANCE;
+
+/** Extra ray length below rest height: how far the road can drop away before the car is airborne. */
+export const SUSPENSION_TRAVEL = 0.4;
