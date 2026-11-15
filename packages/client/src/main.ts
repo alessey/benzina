@@ -16,6 +16,7 @@ import { Connection } from './net/connection';
 import { RaceUi } from './raceUi';
 import { getTrack, OfflineSession, OnlineSession, type Session } from './session';
 import { showStartScreen, type StartChoice } from './startScreen';
+import { saveCar, savedCar } from './carPicker';
 import { createTuningPanel } from './tuningPanel';
 
 /**
@@ -110,17 +111,20 @@ function attractLoop(): () => void {
 
 function choiceFromUrl(): StartChoice | null {
   const name = params.get('name') ?? `Driver ${100 + Math.floor(Math.random() * 900)}`;
-  if (params.has('offline')) return { mode: 'offline', name, bots: num('bots', 3) };
+  const car = savedCar();
+  if (params.has('offline')) return { mode: 'offline', name, car, bots: num('bots', 3) };
   if (!params.has('autojoin')) return null;
   const code = params.get('room');
-  return code ? { mode: 'join', name, code } : { mode: 'quick', name };
+  return code ? { mode: 'join', name, car, code } : { mode: 'quick', name, car };
 }
 
 async function openSession(): Promise<Session> {
   let error: string | undefined;
   for (;;) {
     const choice = (!error && choiceFromUrl()) || (await showStartScreen({ inviteCode: params.get('room'), error }));
-    if (choice.mode === 'offline') return new OfflineSession(getTrack(params.get('track') ?? DEFAULT_TRACK.id), choice.bots);
+    if (choice.mode === 'offline') {
+      return new OfflineSession(getTrack(params.get('track') ?? DEFAULT_TRACK.id), choice.bots, choice.car);
+    }
     setStatus('Connecting…');
     try {
       const { conn, welcome } = await Connection.open({
@@ -129,6 +133,7 @@ async function openSession(): Promise<Session> {
         name: choice.name,
         // Rooms created by a join-by-code (e.g. ?autojoin&room=X) also honour ?bots.
         bots: choice.mode === 'create' ? choice.bots : num('bots'),
+        car: choice.car,
         conditions: { lagMs: num('lag'), jitterMs: num('jitter'), lossPct: num('loss') },
       });
       setStatus('');
@@ -158,7 +163,8 @@ const online = session instanceof OnlineSession ? session : null;
 const refreshTuning = createTuningPanel(session.sim.tuning, {
   persist: !online,
   onChange: online ? (t) => online.sendTuning(t) : undefined,
-  hidden: IS_TOUCH_DEVICE && !params.has('debug'),
+  // A dev tool: always available in dev; in production only with ?debug.
+  hidden: (IS_TOUCH_DEVICE || !import.meta.env.DEV) && !params.has('debug'),
 });
 
 if (IS_TOUCH_DEVICE && fullscreenSupported()) {
@@ -170,7 +176,14 @@ if (IS_TOUCH_DEVICE && fullscreenSupported()) {
 
 // Everything tied to the current track/world is rebuilt when the host switches track.
 const makeCarRenderer = () =>
-  new CarRenderer(scene, session.sim, session.track, (id) => session.players.get(id)?.name ?? `Car ${id}`, () => session.localId);
+  new CarRenderer(
+    scene,
+    session.sim,
+    session.track,
+    (id) => session.players.get(id)?.name ?? `Car ${id}`,
+    () => session.localId,
+    (id) => session.players.get(id)?.car,
+  );
 let cars = makeCarRenderer();
 let effects = new Effects(scene, session.sim, session.track);
 world.setTrack(session.track);
@@ -209,6 +222,11 @@ const raceUi = new RaceUi({
   start: (laps) => session.startRace(laps),
   invite: () => void invite(),
   selectTrack: (id) => session.selectTrack(id),
+  setCar: (car) => {
+    saveCar(car);
+    session.setCar(car);
+  },
+  setBots: (settings) => session.setBotSettings(settings),
 });
 
 let lastPhase = session.race.phase;
@@ -444,11 +462,14 @@ function frame(now: number): void {
     wrongWay,
     practice: { current: practiceLaps.current(session.tick), last: practiceLaps.lastLap, best: practiceLaps.bestLap },
     trackId: session.track.def.id,
+    track: session.track,
+    myCar: session.localId || session.race.phase === 'lobby' ? (session.players.get(session.localId ?? '')?.car ?? null) : null,
+    botSettings: session.botSettings,
   });
 
   // Phones: the lobby/results card would cover the map, so show it only while racing there.
   minimap.visible = !IS_TOUCH_DEVICE || race.phase === 'countdown' || race.phase === 'racing';
-  minimap.update(session.sim, session.localId);
+  minimap.update(session.sim, session.localId, (id) => session.players.get(id)?.car.color);
 
   debug.updateGhosts(online?.lastSnapshot ?? null);
   debug.update({

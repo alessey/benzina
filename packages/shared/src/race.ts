@@ -111,6 +111,12 @@ export class Race {
     return this.phase !== 'lobby' && this.racers.some((r) => r.id === id);
   }
 
+  /** Race progress in sectors (8 per lap), or null if not racing. For bot catch-up. */
+  progressOf(id: string): number | null {
+    if (this.phase !== 'racing') return null;
+    return this.racers.find((r) => r.id === id)?.progress ?? null;
+  }
+
   /** A racer left: they're out. */
   retire(id: string): void {
     const r = this.racers.find((x) => x.id === id);

@@ -18,6 +18,7 @@ const RANGES: Record<keyof CarTuning, [number, number, number]> = {
   handbrakeYawBoost: [1, 3, 0.05],
   steerSpeed: [1, 30, 0.5],
   yawResponse: [1, 40, 0.5],
+  cornerGrip: [10, 120, 1],
   suspensionStiffness: [50, 1000, 10],
   suspensionDamping: [0, 80, 1],
   pivotOffset: [0, 2, 0.05],

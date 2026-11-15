@@ -4,6 +4,8 @@
  */
 import type { CarTuning } from './config';
 import type { RaceState } from './race';
+import { CAR_CLASSES, type CarChoice, type CarClass } from './cars';
+import type { BotSettings } from './bot';
 import type { CarInput } from './input';
 import type { CarState } from './state';
 
@@ -71,6 +73,8 @@ export function decodeInput(buf: Uint8Array): { seq: number; input: CarInput } |
 
 export interface SnapshotCar {
   id: number;
+  /** Class affects the simulation, so every client must know it for every car. */
+  cls: CarClass;
   state: CarState;
   /** Last input the server applied to this car; clients use it to predict remote cars. */
   input: CarInput;
@@ -90,11 +94,11 @@ export interface Snapshot {
 
 // Header: type u8, tick u32, ack u32, lead i8, count u8.
 const SNAP_HEADER = 11;
-// Per car: id u8, p 3×f64, q (y, w) 2×f64, v 3×f64, w.y f64, steer f64, upset f64, input 3B.
+// Per car: id u8, class u8, p 3×f64, q (y, w) 2×f64, v 3×f64, w.y f64, steer f64, upset f64, input 3B.
 // Rotations are yaw-only (roll/pitch locked), so q.x and q.z are always zero.
 // f64 keeps client re-simulation close to the server's; quantize later if bandwidth matters.
 const SNAP_FLOATS = 11;
-const SNAP_CAR = 1 + 8 * SNAP_FLOATS + INPUT_BYTES;
+const SNAP_CAR = 2 + 8 * SNAP_FLOATS + INPUT_BYTES;
 
 /**
  * Encode the car section once per snapshot; each recipient gets its own header
@@ -110,7 +114,8 @@ export function encodeSnapshot(tick: number, cars: SnapshotCar[]): Uint8Array {
   for (const c of cars) {
     const s = c.state;
     view.setUint8(o, c.id);
-    o += 1;
+    view.setUint8(o + 1, Math.max(0, CAR_CLASSES.indexOf(c.cls)));
+    o += 2;
     for (const n of [s.p[0], s.p[1], s.p[2], s.q[1], s.q[3], s.v[0], s.v[1], s.v[2], s.w[1], s.steer, s.upset]) {
       view.setFloat64(o, n);
       o += 8;
@@ -139,7 +144,8 @@ export function decodeSnapshot(buf: Uint8Array): Snapshot | null {
   let o = SNAP_HEADER;
   for (let i = 0; i < count; i++) {
     const id = view.getUint8(o);
-    o += 1;
+    const cls = CAR_CLASSES[view.getUint8(o + 1)] ?? 'equilibrio';
+    o += 2;
     const f: number[] = [];
     for (let k = 0; k < SNAP_FLOATS; k++) {
       f.push(view.getFloat64(o));
@@ -147,6 +153,7 @@ export function decodeSnapshot(buf: Uint8Array): Snapshot | null {
     }
     cars.push({
       id,
+      cls,
       state: {
         p: [f[0], f[1], f[2]],
         q: [0, f[3], 0, f[4]],
@@ -173,6 +180,7 @@ export interface PlayerInfo {
   id: number;
   name: string;
   bot: boolean;
+  car: CarChoice;
 }
 
 export interface RaceMessage {
@@ -199,7 +207,12 @@ export type ServerMessage =
       hostId: number | null;
       tick: number;
       trackId: string;
+      bots: BotSettings;
     }
+  /** A player changed something about themselves (their car). */
+  | { type: 'player'; player: PlayerInfo }
+  /** The host changed how bots drive. */
+  | { type: 'bots'; bots: BotSettings }
   /** The host picked another track: rebuild the world. Sent before the next snapshot. */
   | { type: 'track'; trackId: string }
   | { type: 'joined'; player: PlayerInfo }
@@ -215,4 +228,8 @@ export type ClientMessage =
   /** Host only: put everyone on the grid and start a race. */
   | { type: 'start'; laps: number }
   /** Host only, between races: switch track. */
-  | { type: 'track'; trackId: string };
+  | { type: 'track'; trackId: string }
+  /** Between races: pick a different car. */
+  | { type: 'car'; car: CarChoice }
+  /** Host only: bot difficulty and catch-up. */
+  | { type: 'bots'; bots: BotSettings };

@@ -1,4 +1,5 @@
-import { TRACKS, type PlayerInfo, type RaceState } from '@benzina/shared';
+import { CLASS_SPECS, TRACKS, type BotSettings, type CarChoice, type PlayerInfo, type RaceState, type Track } from '@benzina/shared';
+import { carPickerHtml, handlePickerClick, hex } from './carPicker';
 import { formatTime } from './lapTimer';
 
 export interface RaceView {
@@ -15,6 +16,10 @@ export interface RaceView {
   /** Free-practice lap timer, shown in the lobby. */
   practice: { current: number | null; last: number | null; best: number | null };
   trackId: string;
+  track: Track;
+  /** Our car choice (null when spectating). */
+  myCar: CarChoice | null;
+  botSettings: BotSettings;
 }
 
 const TICK_SECONDS = 1 / 60;
@@ -34,12 +39,41 @@ export class RaceUi {
   private lastPanelKey = '';
 
   private trackId = '';
+  private myCar: CarChoice | null = null;
+  private bots: BotSettings = { difficulty: 'normal', catchUp: false };
+  /** Is the "change car" picker open on the results card? */
+  private picking = false;
+  /** Lobby card minimised to a bar (to warm up unobstructed). */
+  private collapsed = false;
 
   constructor(
-    private readonly actions: { start(laps: number): void; invite(): void; selectTrack(id: string): void },
+    private readonly actions: {
+      start(laps: number): void;
+      invite(): void;
+      selectTrack(id: string): void;
+      setCar(car: CarChoice): void;
+      setBots(settings: BotSettings): void;
+    },
   ) {
     this.panel.addEventListener('click', (e) => {
+      if (this.myCar) {
+        const picked = handlePickerClick(e.target, this.myCar);
+        if (picked) {
+          this.actions.setCar(picked);
+          return;
+        }
+      }
       const act = (e.target as HTMLElement).closest<HTMLElement>('[data-act]')?.dataset.act;
+      if (act === 'pick') {
+        this.picking = !this.picking;
+        this.lastPanelKey = '';
+      }
+      if (act === 'collapse' || act === 'expand') {
+        this.collapsed = act === 'collapse';
+        this.lastPanelKey = '';
+      }
+      if (act?.startsWith('bots-')) this.actions.setBots({ ...this.bots, difficulty: act.slice(5) as BotSettings['difficulty'] });
+      if (act === 'catchup') this.actions.setBots({ ...this.bots, catchUp: !this.bots.catchUp });
       if (act === 'start') this.actions.start(this.laps);
       if (act === 'invite') this.actions.invite();
       if (act === 'laps-') this.laps = Math.max(1, this.laps - 1);
@@ -67,6 +101,8 @@ export class RaceUi {
   update(v: RaceView): void {
     const { race } = v;
     this.trackId = v.trackId;
+    this.myCar = v.myCar;
+    this.bots = v.botSettings;
     const me = race.standings.find((s) => s.id === v.localId);
 
     // Lap box: race info while racing, practice timer otherwise.
@@ -118,6 +154,11 @@ export class RaceUi {
     const panelKey = JSON.stringify([
       race.phase,
       v.trackId,
+      v.myCar,
+      v.botSettings,
+      this.picking,
+      this.collapsed,
+      [...v.players.values()].map((p) => p.car),
       v.isHost,
       this.laps,
       [...v.players.values()].map((p) => p.name),
@@ -127,34 +168,84 @@ export class RaceUi {
     if (panelKey !== this.lastPanelKey) {
       this.lastPanelKey = panelKey;
       this.set(this.panel, this.renderPanel(v));
+      const preview = this.panel.querySelector<HTMLCanvasElement>('canvas.track-preview');
+      if (preview) drawTrackPreview(preview, v.track);
     }
   }
 
   private renderPanel(v: RaceView): string {
     const { race } = v;
-    const startControls = v.isHost
-      ? `<div class="laps"><button data-act="laps-" aria-label="Fewer laps">−</button><span>${this.laps} lap${this.laps === 1 ? '' : 's'}</span><button data-act="laps+" aria-label="More laps">+</button></div>
-         <button class="primary" data-act="start">${race.phase === 'results' ? 'Race again' : 'Start race'}</button>`
-      : `<p class="muted">Waiting for the host to start…</p>`;
-    const invite = v.online ? `<button data-act="invite">Invite friends</button>` : '';
-    const trackName = escapeHtml(TRACKS.find((t) => t.id === v.trackId)?.name ?? v.trackId);
-    const trackRow = v.isHost
-      ? `<div class="laps track"><button data-act="track-" aria-label="Previous track">◀</button><span>${trackName}</span><button data-act="track+" aria-label="Next track">▶</button></div>`
-      : `<p class="muted">Track: ${trackName}</p>`;
+    const isResults = race.phase === 'results';
+    if (race.phase !== 'lobby' && !isResults) return '';
 
-    if (race.phase === 'lobby') {
-      const names = [...v.players.values()]
-        .map((p) => `<li>${escapeHtml(p.name)}${p.bot ? ' <em>bot</em>' : ''}</li>`)
-        .join('');
-      return `<div class="card">
-        <div class="title">${v.online ? `Room ${v.room}` : 'Practice'} <span class="muted">· warm up, then start</span></div>
-        <ul class="players">${names}</ul>
-        ${trackRow}
-        <div class="actions">${startControls}${invite}</div>
+    const trackName = escapeHtml(TRACKS.find((t) => t.id === v.trackId)?.name ?? v.trackId);
+    const hasBots = [...v.players.values()].some((p) => p.bot);
+    const roomTitle = v.online ? `Room <b>${v.room}</b>` : '<b>Practice</b>';
+
+    // Collapsed: a slim bar so you can warm up without the card in the way.
+    if (this.collapsed && !isResults) {
+      return `<div class="card lobby-bar">
+        <span>${roomTitle} · ${v.players.size} driver${v.players.size === 1 ? '' : 's'} · ${trackName}</span>
+        ${v.isHost ? `<button class="primary" data-act="start">Start race</button>` : ''}
+        <button data-act="expand">Show</button>
       </div>`;
     }
 
-    if (race.phase === 'results') {
+    // --- Your car
+    const carSection = v.myCar
+      ? isResults
+        ? `<section><h3>Your car</h3>
+             <div class="my-car"><span class="dot" style="background:${hex(v.myCar.color)}"></span>
+             <b>${CLASS_SPECS[v.myCar.cls].name}</b>
+             <button data-act="pick">${this.picking ? 'Done' : 'Change'}</button></div>
+             ${this.picking ? carPickerHtml(v.myCar) : ''}</section>`
+        : `<section><h3>Your car</h3>${carPickerHtml(v.myCar)}</section>`
+      : '';
+
+    // --- Drivers
+    const drivers = [...v.players.values()]
+      .map(
+        (p) =>
+          `<li><span class="dot" style="background:${hex(p.car.color)}"></span><span class="who">${escapeHtml(p.name)}</span><em>${CLASS_SPECS[p.car.cls].name}${p.bot ? ' · bot' : ''}</em></li>`,
+      )
+      .join('');
+    const driversSection = `<section><h3>Drivers <span class="muted">${v.players.size}/8</span></h3><ul class="drivers">${drivers}</ul></section>`;
+
+    // --- Race settings
+    const trackControl = v.isHost
+      ? `<div class="stepper track"><button data-act="track-" aria-label="Previous track">◀</button><span>${trackName}</span><button data-act="track+" aria-label="Next track">▶</button></div>`
+      : `<div class="track-name">${trackName}</div>`;
+    const levels = (['easy', 'normal', 'hard'] as const)
+      .map((d) => `<button data-act="bots-${d}" class="${v.botSettings.difficulty === d ? 'on' : ''}">${d[0].toUpperCase() + d.slice(1)}</button>`)
+      .join('');
+    const settings = v.isHost
+      ? `<div class="setting"><span class="label-sm">Laps</span>
+           <div class="stepper"><button data-act="laps-" aria-label="Fewer laps">−</button><span>${this.laps}</span><button data-act="laps+" aria-label="More laps">+</button></div></div>
+         ${
+           hasBots
+             ? `<div class="setting"><span class="label-sm">Bots</span><div class="seg">${levels}</div></div>
+                <div class="setting"><span class="label-sm">Catch-up</span>
+                  <button data-act="catchup" class="toggle ${v.botSettings.catchUp ? 'on' : ''}" title="Bots ahead ease off, bots behind push harder">${v.botSettings.catchUp ? 'On' : 'Off'}</button></div>`
+             : ''
+         }
+         <button class="primary start" data-act="start">${isResults ? 'Race again' : 'Start race'}</button>`
+      : `${hasBots ? `<p class="muted">Bots: ${v.botSettings.difficulty}${v.botSettings.catchUp ? ', catch-up on' : ''}</p>` : ''}
+         <p class="waiting">Waiting for the host to start…</p>`;
+    const raceSection = `<section><h3>Race</h3>
+        <div class="track-row"><canvas class="track-preview" width="150" height="104"></canvas>
+          <div class="track-side">${trackControl}<div class="muted track-facts">${trackFacts(v.track)}</div></div></div>
+        ${settings}
+      </section>`;
+
+    const header = `<header>
+        <div>${roomTitle}${v.online ? '' : ''} <span class="muted">${isResults ? '· results' : '· warm up, then start'}</span></div>
+        <div class="header-actions">
+          ${v.online ? `<button data-act="invite">Invite</button>` : ''}
+          ${isResults ? '' : `<button data-act="collapse" aria-label="Hide">Hide</button>`}
+        </div>
+      </header>`;
+
+    if (isResults) {
       const rows = race.standings
         .map(
           (s) =>
@@ -162,18 +253,85 @@ export class RaceUi {
         )
         .join('');
       const secs = Math.max(0, Math.ceil((race.phaseEndsTick - v.now) / 60));
-      return `<div class="card results">
-        <div class="title">Results</div>
-        <table><thead><tr><th></th><th>Driver</th><th>Time</th><th>Best lap</th></tr></thead><tbody>${rows}</tbody></table>
-        <p class="muted">Back to the lobby in ${secs}s</p>
-        ${trackRow}
-        <div class="actions">${startControls}</div>
+      return `<div class="card lobby results">
+        ${header}
+        <section class="wide"><table><thead><tr><th></th><th>Driver</th><th>Time</th><th>Best lap</th></tr></thead><tbody>${rows}</tbody></table>
+        <p class="muted">Back to the lobby in ${secs}s</p></section>
+        <div class="columns">${carSection ? `<div>${carSection}</div>` : ''}<div>${raceSection}</div></div>
       </div>`;
     }
-    return '';
+
+    return `<div class="card lobby">
+      ${header}
+      <div class="columns">
+        <div>${carSection}${driversSection}</div>
+        <div>${raceSection}</div>
+      </div>
+    </div>`;
   }
 }
 
 function escapeHtml(s: string): string {
   return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
+}
+
+/** A line of facts about a track: length, climb, features. */
+function trackFacts(track: Track): string {
+  const facts = [`${(track.length / 1000).toFixed(2)} km`];
+  if (track.bounds.maxY > 2) facts.push(`${Math.round(track.bounds.maxY)} m climb`);
+  if (track.def.jumps) facts.push('jumps');
+  if (track.def.tunnel) facts.push('tunnel');
+  if (track.def.scenery === 'city') facts.push('street circuit');
+  return facts.join(' · ');
+}
+
+/** Overhead outline of a track, with the start marked. */
+function drawTrackPreview(canvas: HTMLCanvasElement, track: Track): void {
+  const dpr = Math.min(window.devicePixelRatio, 2);
+  const w = canvas.width;
+  const h = canvas.height;
+  canvas.style.width = `${w}px`;
+  canvas.style.height = `${h}px`;
+  canvas.width = w * dpr;
+  canvas.height = h * dpr;
+  const ctx = canvas.getContext('2d')!;
+  ctx.scale(dpr, dpr);
+  const b = track.bounds;
+  const pad = 10;
+  const scale = Math.min((w - pad * 2) / (b.maxX - b.minX), (h - pad * 2) / (b.maxZ - b.minZ));
+  const ox = w / 2 - ((b.minX + b.maxX) / 2) * scale;
+  const oz = h / 2 + ((b.minZ + b.maxZ) / 2) * scale;
+  const at = (x: number, z: number): [number, number] => [ox + x * scale, oz - z * scale];
+  const path = new Path2D();
+  track.samples.forEach((s, i) => (i === 0 ? path.moveTo(...at(s.x, s.z)) : path.lineTo(...at(s.x, s.z))));
+  path.closePath();
+  ctx.lineJoin = 'round';
+  ctx.strokeStyle = 'rgba(255,255,255,0.95)';
+  ctx.lineWidth = 5;
+  ctx.stroke(path);
+  ctx.strokeStyle = '#3c4046';
+  ctx.lineWidth = 3;
+  ctx.stroke(path);
+  if (track.tunnel) {
+    // Tunnel section drawn darker.
+    const [a, c] = track.tunnel;
+    const tunnel = new Path2D();
+    for (let i = a, k = 0; k < track.samples.length; i = (i + 1) % track.samples.length, k++) {
+      const s = track.samples[i];
+      if (k === 0) tunnel.moveTo(...at(s.x, s.z));
+      else tunnel.lineTo(...at(s.x, s.z));
+      if (i === c) break;
+    }
+    ctx.strokeStyle = '#111';
+    ctx.lineWidth = 3;
+    ctx.setLineDash([3, 2]);
+    ctx.stroke(tunnel);
+    ctx.setLineDash([]);
+  }
+  const s0 = track.samples[0];
+  const [sx, sy] = at(s0.x, s0.z);
+  ctx.fillStyle = '#e23b2e';
+  ctx.beginPath();
+  ctx.arc(sx, sy, 3.5, 0, Math.PI * 2);
+  ctx.fill();
 }

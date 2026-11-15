@@ -1,13 +1,17 @@
 /**
- * The first thing players see: name, then quick race / create a room / join by code /
- * practice offline. Invite links (?room=CODE) pre-fill the code.
+ * The first thing players see: a name, then quick race / create a room / join by code /
+ * practice offline. Invite links (?room=CODE) pre-fill the code. The car is chosen in the
+ * lobby (your last choice carries over).
  */
+import type { CarChoice } from '@benzina/shared';
+import { savedCar } from './carPicker';
 
-export type StartChoice =
-  | { mode: 'quick'; name: string }
-  | { mode: 'create'; name: string; bots: number }
-  | { mode: 'join'; name: string; code: string }
-  | { mode: 'offline'; name: string; bots: number };
+export type StartChoice = { name: string; car: CarChoice } & (
+  | { mode: 'quick' }
+  | { mode: 'create'; bots: number }
+  | { mode: 'join'; code: string }
+  | { mode: 'offline'; bots: number }
+);
 
 const NAME_KEY = 'benzina.name';
 
@@ -32,17 +36,18 @@ export function showStartScreen(opts: { inviteCode?: string | null; error?: stri
   root.id = 'start';
   const invite = opts.inviteCode?.toUpperCase() ?? '';
   root.innerHTML = `
-    <form class="card" autocomplete="off">
+    <form class="card start-card" autocomplete="off">
       <h1>BENZINA</h1>
-      ${invite ? `<p class="invite">You're invited to room <b>${invite}</b></p>` : ''}
+      ${invite ? `<p class="invite">You're invited to room <b>${invite}</b></p>` : '<p class="tagline-sm">Arcade racing with friends</p>'}
       <label class="field">Your name
         <input name="name" maxlength="20" placeholder="Driver" enterkeyhint="go" />
       </label>
       ${
         invite
-          ? `<button type="submit" class="primary" data-act="join">Join ${invite}</button>`
-          : `<button type="submit" class="primary" data-act="quick">Quick race</button>`
+          ? `<button type="submit" class="primary big" data-act="join">Join ${invite}</button>`
+          : `<button type="submit" class="primary big" data-act="quick">Quick race</button>`
       }
+      <div class="divider"><span>or</span></div>
       <div class="row">
         <button type="button" data-act="create">Create private room</button>
         <select name="bots" aria-label="Bots">
@@ -53,7 +58,7 @@ export function showStartScreen(opts: { inviteCode?: string | null; error?: stri
         <input name="code" maxlength="8" placeholder="Room code" value="${invite}" autocapitalize="characters" />
         <button type="button" data-act="join">Join</button>
       </div>
-      <button type="button" class="ghost" data-act="offline">Practice offline</button>
+      <button type="button" class="link" data-act="offline">Practice offline</button>
       <p class="error" ${opts.error ? '' : 'hidden'}>${opts.error ?? ''}</p>
     </form>`;
   document.body.appendChild(root);
@@ -65,6 +70,7 @@ export function showStartScreen(opts: { inviteCode?: string | null; error?: stri
   const botsSelect = form.elements.namedItem('bots') as HTMLSelectElement;
   const error = root.querySelector<HTMLParagraphElement>('.error')!;
   nameInput.value = savedName();
+  const car: CarChoice = savedCar();
 
   return new Promise((resolve) => {
     const choose = (act: string) => {
@@ -72,6 +78,7 @@ export function showStartScreen(opts: { inviteCode?: string | null; error?: stri
       saveName(nameInput.value.trim());
       const bots = Number(botsSelect.value);
       let choice: StartChoice;
+      const base = { name, car };
       if (act === 'join') {
         const code = codeInput.value.trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
         if (!code) {
@@ -80,10 +87,10 @@ export function showStartScreen(opts: { inviteCode?: string | null; error?: stri
           codeInput.focus();
           return;
         }
-        choice = { mode: 'join', name, code };
-      } else if (act === 'create') choice = { mode: 'create', name, bots };
-      else if (act === 'offline') choice = { mode: 'offline', name, bots };
-      else choice = { mode: 'quick', name };
+        choice = { ...base, mode: 'join', code };
+      } else if (act === 'create') choice = { ...base, mode: 'create', bots };
+      else if (act === 'offline') choice = { ...base, mode: 'offline', bots };
+      else choice = { ...base, mode: 'quick' };
       root.remove();
       document.body.classList.remove('menu');
       resolve(choice);
@@ -93,7 +100,8 @@ export function showStartScreen(opts: { inviteCode?: string | null; error?: stri
       const primary = form.querySelector<HTMLButtonElement>('button.primary')!;
       choose(primary.dataset.act!);
     });
-    for (const btn of form.querySelectorAll<HTMLButtonElement>('button[type=button]')) {
+    // Only the action buttons (the car picker's buttons have no data-act).
+    for (const btn of form.querySelectorAll<HTMLButtonElement>('button[type=button][data-act]')) {
       btn.addEventListener('click', () => choose(btn.dataset.act!));
     }
   });

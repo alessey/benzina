@@ -1,5 +1,6 @@
 import { RAPIER } from './physics';
 import { CAR_RIDE_HEIGHT, CAR_SHAPE, HOVER_CLEARANCE, SUSPENSION_TRAVEL, type CarTuning } from './config';
+import { CLASS_SPECS, classTuning, type CarClass } from './cars';
 import type { CarInput } from './input';
 import { type CarState, yawOf, yawQuat } from './state';
 import { nearestSampleIndex, nearestSampleIndexNear, rightOf, roadHeightAt, type Track } from './track';
@@ -16,6 +17,8 @@ const SPIN_FADE_SPEED = 20;
 /** How fast `upset` fades (per second) once the tyres grip again, and while still sliding. */
 const UPSET_FADE_GRIPPING = 0.8;
 const UPSET_FADE_SLIDING = 0.15;
+/** Within this distance of a wall (m), steering away from it isn't limited by cornering grip. */
+const WALL_NEAR = 2.5;
 /** Closer than this to a wall (metres) counts as touching it. */
 const WALL_CONTACT_GAP = 0.08;
 /** Full extents of the car's collider, including the rounded border. */
@@ -73,6 +76,8 @@ export class Car {
     y: number,
     z: number,
     yaw: number,
+    /** Car class (part of the simulation: affects handling and mass). */
+    public carClass: CarClass = 'equilibrio',
   ) {
     const bodyDesc = RAPIER.RigidBodyDesc.dynamic()
       .setTranslation(x, y + CAR_RIDE_HEIGHT, z)
@@ -88,7 +93,7 @@ export class Car {
       CAR_SHAPE.halfLength,
       CAR_SHAPE.borderRadius,
     )
-      .setDensity(CAR_SHAPE.density)
+      .setDensity(CAR_SHAPE.density * CLASS_SPECS[carClass].mass)
       .setFriction(0)
       .setFrictionCombineRule(RAPIER.CoefficientCombineRule.Min)
       .setRestitution(0.2);
@@ -102,7 +107,20 @@ export class Car {
     return v.x * Math.sin(yaw) + v.z * Math.cos(yaw);
   }
 
-  applyControls(input: CarInput, t: CarTuning, dt: number): void {
+  /** Change class (between races): handling follows immediately, mass via the collider density. */
+  setClass(cls: CarClass): void {
+    if (cls === this.carClass) return;
+    this.carClass = cls;
+    this.collider.setDensity(CAR_SHAPE.density * CLASS_SPECS[cls].mass);
+  }
+
+  /** Relative mass from the class (for bump impulses). */
+  get mass(): number {
+    return CLASS_SPECS[this.carClass].mass;
+  }
+
+  applyControls(input: CarInput, base: CarTuning, dt: number): void {
+    const t = classTuning(base, this.carClass);
     const pos = this.body.translation();
     if (input.reset || pos.y < FALL_RESET_Y || this.belowRoad(pos.x, pos.y, pos.z)) {
       this.resetToTrack();
@@ -215,6 +233,13 @@ export class Car {
       // Steering right (+) turns clockwise seen from above, which is negative yaw.
       let targetYawRate =
         -this.steer * t.maxYawRate * lowSpeedFactor * highSpeedFactor * boost * Math.sign(vF);
+      // Cornering limit: yaw rate × speed is sideways acceleration; past what the tyres hold,
+      // the car runs wide. The handbrake deliberately breaks traction to rotate further, and
+      // turning away from a wall you're on or right next to gets the same allowance, so the
+      // grip limit never leaves you stuck along an outside wall.
+      const wallEscape = wall.near !== 0 && wall.near * this.steer < 0;
+      const maxCornerYaw = (t.cornerGrip * (input.handbrake || wallEscape ? 1.6 : 1)) / Math.max(4, Math.abs(vF));
+      targetYawRate = clamp(targetYawRate, -maxCornerYaw, maxCornerYaw);
       // Pointed into the wall? Turn parallel to it so the car glances off instead of pinning.
       // (Turning away from the right wall is a left turn, i.e. positive yaw.)
       if (wall.side !== 0 && wall.into > 0) targetYawRate += wall.side * wall.into * t.wallDeflect * Math.sign(vF);
@@ -265,7 +290,12 @@ export class Car {
    * Returns the side (1 right, -1 left, 0 none), the wall's outward normal on the right
    * side (track "right" vector), and how much the car's nose points into the wall (0..1).
    */
-  private wallContact(x: number, z: number, fx: number, fz: number): { side: -1 | 0 | 1; nx: number; nz: number; into: number } {
+  private wallContact(
+    x: number,
+    z: number,
+    fx: number,
+    fz: number,
+  ): { side: -1 | 0 | 1; nx: number; nz: number; into: number; near: -1 | 0 | 1 } {
     this.sampleHint = nearestSampleIndexNear(this.track, x, z, this.sampleHint);
     const s = this.track.samples[this.sampleHint];
     const r = rightOf(s.tx, s.tz);
@@ -279,11 +309,17 @@ export class Car {
     // Only near the road edge: a car somehow beyond the walls (or in a test arena off the
     // circuit) isn't scraping anything.
     const beyond = Math.abs(offset) - reach > halfRoad + 0.5;
+    const gapRight = halfRoad - (offset + reach);
+    const gapLeft = halfRoad - (reach - offset);
     let side: -1 | 0 | 1 = 0;
     if (beyond) side = 0;
-    else if (halfRoad - (offset + reach) < WALL_CONTACT_GAP) side = 1;
-    else if (halfRoad - (reach - offset) < WALL_CONTACT_GAP) side = -1;
-    return { side, nx: r.x, nz: r.z, into: Math.max(0, side * fDotR) };
+    else if (gapRight < WALL_CONTACT_GAP) side = 1;
+    else if (gapLeft < WALL_CONTACT_GAP) side = -1;
+    // Close to a wall (not necessarily touching), for the escape assist.
+    let near: -1 | 0 | 1 = 0;
+    if (!beyond && gapRight < WALL_NEAR) near = 1;
+    else if (!beyond && gapLeft < WALL_NEAR) near = -1;
+    return { side, nx: r.x, nz: r.z, into: Math.max(0, side * fDotR), near };
   }
 
   /**

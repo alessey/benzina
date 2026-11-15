@@ -5,8 +5,8 @@ const WHEEL_RADIUS = 0.38;
 /** Car body spans 2.0 m × 4.0 m (the collider); heights are relative to the road. */
 const ROAD = -CAR_RIDE_HEIGHT;
 
-export type BodyStyle = 'gt' | 'hatch' | 'muscle';
-export const BODY_STYLES: readonly BodyStyle[] = ['gt', 'hatch', 'muscle'];
+export type BodyStyle = 'gt' | 'hatch' | 'muscle' | 'coupe';
+export const BODY_STYLES: readonly BodyStyle[] = ['gt', 'hatch', 'muscle', 'coupe'];
 
 interface StyleSpec {
   /** Side profile of the lower body, (z, height above road), front to back along the top. */
@@ -32,6 +32,13 @@ const STYLES: Record<BodyStyle, StyleSpec> = {
     body: [[2.0, 0.45], [1.92, 0.72], [1.15, 0.86], [0.7, 0.92], [-1.7, 0.95], [-2.0, 0.9], [-2.0, 0.5]],
     cabin: [[0.75, 0.9], [0.1, 1.42], [-1.55, 1.44], [-1.9, 0.95]],
     cabinWidth: 1.62,
+    spoiler: false,
+    stripe: false,
+  },
+  coupe: {
+    body: [[2.0, 0.44], [1.94, 0.68], [1.1, 0.82], [0.55, 0.88], [-1.45, 0.9], [-1.98, 0.84], [-2.0, 0.5]],
+    cabin: [[0.6, 0.87], [-0.05, 1.28], [-1.0, 1.3], [-1.6, 0.9]],
+    cabinWidth: 1.55,
     spoiler: false,
     stripe: false,
   },

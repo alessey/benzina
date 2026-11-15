@@ -142,7 +142,9 @@ export class Predictor {
     for (const c of snap.cars) {
       const id = String(c.id);
       present.add(id);
-      if (!sim.cars.has(id)) sim.addCar(id, 0).setState(c.state);
+      const existing = sim.cars.get(id);
+      if (!existing) sim.addCar(id, 0, c.cls).setState(c.state);
+      else existing.setClass(c.cls);
       // Never repeat a remote reset during prediction.
       this.remoteInputs.set(id, { ...c.input, reset: false });
     }

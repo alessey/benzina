@@ -1,7 +1,16 @@
 import {
+  BOT_PROFILES,
+  CAR_CLASSES,
+  catchUpProfile,
+  freeColor,
+  DEFAULT_BOT_SETTINGS,
+  DT,
   Race,
   botInput,
+  parseCarChoice,
   pickBotName,
+  type BotSettings,
+  type CarChoice,
   decodeInput,
   encodeSnapshot,
   NEUTRAL_INPUT,
@@ -88,6 +97,7 @@ export class Room {
   private readonly players = new Map<number, Player>();
   private readonly bots = new Map<number, Bot>();
   private hostId: number | null = null;
+  botSettings: BotSettings = { ...DEFAULT_BOT_SETTINGS };
 
   constructor(
     readonly code: string,
@@ -118,13 +128,13 @@ export class Room {
     return this.players.size < MAX_CARS;
   }
 
-  join(conn: Connection, name: string): number | null {
+  join(conn: Connection, name: string, car: CarChoice = parseCarChoice(null)): number | null {
     if (!this.hasRoomForHuman) return null;
     // Bots give up their seats for humans.
     if (this.carCount >= MAX_CARS && this.bots.size > 0) this.removeBot([...this.bots.keys()].pop()!);
 
     const id = this.freeId(1);
-    const info: PlayerInfo = { id, name: name.slice(0, 20) || `Driver ${id}`, bot: false };
+    const info: PlayerInfo = { id, name: name.slice(0, 20) || `Driver ${id}`, bot: false, car: parseCarChoice(car) };
     // Mid-race joiners watch until the next lobby; otherwise take a car now.
     const spectator = this.race.phase !== 'lobby';
     this.players.set(id, {
@@ -143,6 +153,7 @@ export class Room {
     });
     if (!spectator) this.giveCar(this.players.get(id)!);
     this.hostId ??= id;
+    this.recolorBots(false);
 
     this.sendTo(conn, {
       type: 'welcome',
@@ -156,6 +167,7 @@ export class Room {
       hostId: this.hostId,
       tick: this.sim.tick,
       trackId: this.sim.track.def.id,
+      bots: this.botSettings,
     });
     this.broadcast({ type: 'joined', player: info }, id);
     return id;
@@ -178,7 +190,7 @@ export class Room {
     if (p.slot !== null) return;
     if (this.sim.cars.size >= MAX_CARS && this.bots.size > 0) this.removeBot([...this.bots.keys()].pop()!);
     p.slot = this.freeSlot();
-    this.sim.addCar(String(p.info.id), p.slot);
+    this.sim.addCar(String(p.info.id), p.slot, p.info.car.cls);
     // A fresh car means a fresh input stream.
     p.queue = [];
     p.nextSeq = null;
@@ -212,6 +224,35 @@ export class Room {
       this.startRace(Number(msg.laps) || 3);
     } else if (msg.type === 'track' && id === this.hostId) {
       this.changeTrack(String(msg.trackId));
+    } else if (msg.type === 'car') {
+      this.changeCar(player, parseCarChoice(msg.car));
+    } else if (msg.type === 'bots' && id === this.hostId) {
+      const d = msg.bots?.difficulty;
+      this.botSettings = {
+        difficulty: d === 'easy' || d === 'hard' ? d : 'normal',
+        catchUp: msg.bots?.catchUp === true,
+      };
+      this.broadcast({ type: 'bots', bots: this.botSettings });
+    }
+  }
+
+  /** Between races only: a car change mid-race would be a free pit stop. */
+  private changeCar(p: Player, car: CarChoice): void {
+    if (this.race.phase !== 'lobby' && this.race.phase !== 'results') return;
+    p.info = { ...p.info, car };
+    this.sim.cars.get(String(p.info.id))?.setClass(car.cls);
+    this.broadcast({ type: 'player', player: p.info });
+    this.recolorBots(true);
+  }
+
+  /** Bots never wear a colour a human has chosen: give clashing bots a free one. */
+  private recolorBots(announce: boolean): void {
+    const human = new Set([...this.players.values()].map((p) => p.info.car.color));
+    for (const b of this.bots.values()) {
+      if (!human.has(b.info.car.color)) continue;
+      const taken = [...this.players.values(), ...this.bots.values()].map((x) => x.info.car.color);
+      b.info = { ...b.info, car: { ...b.info.car, color: freeColor(taken, b.info.id) } };
+      if (announce) this.broadcast({ type: 'player', player: b.info });
     }
   }
 
@@ -228,9 +269,9 @@ export class Room {
     old.free();
     this.race = new Race(track);
     for (const p of this.players.values()) {
-      if (p.slot !== null) this.sim.addCar(String(p.info.id), p.slot);
+      if (p.slot !== null) this.sim.addCar(String(p.info.id), p.slot, p.info.car.cls);
     }
-    for (const b of this.bots.values()) this.sim.addCar(String(b.info.id), b.slot);
+    for (const b of this.bots.values()) this.sim.addCar(String(b.info.id), b.slot, b.info.car.cls);
     this.broadcast({ type: 'track', trackId });
     this.broadcastRace();
   }
@@ -262,10 +303,17 @@ export class Room {
       inputs.set(String(p.info.id), p.appliedInput);
     }
 
+    const profile = BOT_PROFILES[this.botSettings.difficulty];
+    const leader = this.leadingHumanProgress();
     for (const b of this.bots.values()) {
-      const car = this.sim.cars.get(String(b.info.id))!;
-      b.lastInput = frozen ? NEUTRAL_INPUT : botInput(car, this.sim.track, 0.9);
-      inputs.set(String(b.info.id), b.lastInput);
+      const id = String(b.info.id);
+      const car = this.sim.cars.get(id)!;
+      // Catch-up: compare with the best human (only while racing).
+      const mine = this.race.progressOf(id);
+      const driving =
+        this.botSettings.catchUp && leader !== null && mine !== null ? catchUpProfile(profile, mine - leader) : profile;
+      b.lastInput = frozen ? NEUTRAL_INPUT : botInput(car, this.sim.track, driving, this.sim.tuning, this.sim.tick * DT);
+      inputs.set(id, b.lastInput);
     }
 
     this.sim.step(inputs);
@@ -280,6 +328,16 @@ export class Room {
     if (changed || (live && this.sim.tick % RACE_UPDATE_TICKS === 0)) this.broadcastRace();
 
     if (this.sim.tick % SERVER_TICKS_PER_SNAPSHOT === 0) this.sendSnapshots();
+  }
+
+  /** Progress (sectors) of the human furthest ahead in the race, or null. */
+  private leadingHumanProgress(): number | null {
+    let best: number | null = null;
+    for (const p of this.players.values()) {
+      const progress = this.race.progressOf(String(p.info.id));
+      if (progress !== null && (best === null || progress > best)) best = progress;
+    }
+    return best;
   }
 
   private broadcastRace(): void {
@@ -331,10 +389,11 @@ export class Room {
     const cars: SnapshotCar[] = [];
     for (const p of this.players.values()) {
       const car = this.sim.cars.get(String(p.info.id));
-      if (car) cars.push({ id: p.info.id, state: car.getState(), input: p.appliedInput });
+      if (car) cars.push({ id: p.info.id, cls: car.carClass, state: car.getState(), input: p.appliedInput });
     }
     for (const b of this.bots.values()) {
-      cars.push({ id: b.info.id, state: this.sim.cars.get(String(b.info.id))!.getState(), input: b.lastInput });
+      const car = this.sim.cars.get(String(b.info.id))!;
+      cars.push({ id: b.info.id, cls: car.carClass, state: car.getState(), input: b.lastInput });
     }
     const encoded = encodeSnapshot(this.sim.tick, cars);
     for (const p of this.players.values()) {
@@ -361,8 +420,11 @@ export class Room {
     const id = this.freeId(FIRST_BOT_ID);
     const slot = this.freeSlot();
     const taken = [...this.players.values(), ...this.bots.values()].map((p) => p.info.name);
-    const info: PlayerInfo = { id, name: pickBotName(taken, this.code.charCodeAt(0) + id), bot: true };
-    this.sim.addCar(String(id), slot);
+    const seed = this.code.charCodeAt(0) + id;
+    const colors = [...this.players.values(), ...this.bots.values()].map((p) => p.info.car.color);
+    const car: CarChoice = { cls: CAR_CLASSES[(seed * 3) % CAR_CLASSES.length], color: freeColor(colors, seed * 7) };
+    const info: PlayerInfo = { id, name: pickBotName(taken, seed), bot: true, car };
+    this.sim.addCar(String(id), slot, car.cls);
     this.bots.set(id, { info, slot, lastInput: NEUTRAL_INPUT });
   }
 

@@ -37,6 +37,11 @@ export interface CarTuning {
   steerSpeed: number;
   /** How fast the actual yaw rate converges on the target (1/s). Lower = collisions spin you more. */
   yawResponse: number;
+  /**
+   * Cornering limit: the most sideways acceleration the tyres hold (m/s²). Turning tighter than
+   * v²/R allows makes the car run wide, so faster cars must brake more for corners.
+   */
+  cornerGrip: number;
   /** Hover suspension spring, as acceleration per metre of compression (1/s²). */
   suspensionStiffness: number;
   /** Hover suspension damping (1/s). ~2·√stiffness is critically damped. */
@@ -86,6 +91,7 @@ export const DEFAULT_TUNING: CarTuning = {
   handbrakeYawBoost: 1.5,
   steerSpeed: 6,
   yawResponse: 12,
+  cornerGrip: 40,
   suspensionStiffness: 500,
   suspensionDamping: 42,
   pivotOffset: 1.2,

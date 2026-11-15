@@ -1,6 +1,10 @@
 import * as THREE from 'three';
 import { nearestSampleIndexNear, rightOf, yawOf, type CarState, type Correction, type SimWorld, type Track } from '@benzina/shared';
-import { BODY_STYLES, CarView } from './carView';
+import type { CarChoice, CarClass } from '@benzina/shared';
+import { CarView, type BodyStyle } from './carView';
+
+/** Each class has its own silhouette. */
+const STYLE_FOR_CLASS: Record<CarClass, BodyStyle> = { equilibrio: 'coupe', bolide: 'gt', scatto: 'muscle', artiglio: 'hatch' };
 
 /** How quickly visual correction offsets fade out (1/s). */
 const SMOOTHING_RATE = 10;
@@ -26,6 +30,8 @@ interface Pose {
 interface Entry {
   id: string;
   view: CarView;
+  /** What the view was built for; rebuilt if the owner changes car. */
+  look: string;
   tag: THREE.Sprite | null;
   prev: Pose;
   curr: Pose;
@@ -92,25 +98,37 @@ export class CarRenderer {
     private readonly track: Track,
     private readonly nameOf: (id: string) => string,
     private readonly localId: () => string | null,
+    /** The car (class + colour) a player chose, if known. */
+    private readonly carOf: (id: string) => CarChoice | undefined = () => undefined,
   ) {}
 
-  /** Create views for new cars, remove views for departed ones. */
+  private lookOf(id: string): string {
+    const car = this.carOf(id);
+    const cls = this.sim.cars.get(id)?.carClass ?? car?.cls ?? 'equilibrio';
+    return `${cls}/${car?.color ?? carColor(id, id === this.localId())}`;
+  }
+
+  /** Create views for new cars, remove views for departed ones, rebuild changed ones. */
   sync(): void {
+    for (const [id, e] of this.entries) {
+      if (this.sim.cars.has(id) && e.look !== this.lookOf(id)) {
+        this.scene.remove(e.view.group);
+        this.entries.delete(id);
+      }
+    }
     for (const [id, car] of this.sim.cars) {
       if (this.entries.has(id)) continue;
       const pose = poseOf(car.getState());
       const local = id === this.localId();
-      const n = Number(id) || 0;
-      const view = new CarView(
-        carColor(id, local),
-        local ? 'gt' : BODY_STYLES[(n * 7 + 1) % BODY_STYLES.length],
-      );
+      const chosen = this.carOf(id);
+      const view = new CarView(chosen?.color ?? carColor(id, local), STYLE_FOR_CLASS[car.carClass]);
       const tag = local ? null : nameTag(this.nameOf(id));
       if (tag) view.group.add(tag);
       this.scene.add(view.group);
       this.entries.set(id, {
         id,
         view,
+        look: this.lookOf(id),
         tag,
         prev: { ...pose },
         curr: { ...pose },

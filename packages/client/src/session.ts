@@ -1,7 +1,14 @@
 import {
+  BOT_PROFILES,
+  CAR_CLASSES,
   botInput,
+  freeColor,
   buildTrack,
+  catchUpProfile,
+  DEFAULT_BOT_SETTINGS,
   pickBotName,
+  type BotSettings,
+  type CarChoice,
   DT,
   trackById,
   NEUTRAL_INPUT,
@@ -52,6 +59,12 @@ export interface Session {
   startRace(laps: number): void;
   /** Host only, between races. */
   selectTrack(id: string): void;
+  /** How bots drive (host sets it). */
+  readonly botSettings: BotSettings;
+  setBotSettings(settings: BotSettings): void;
+  /** Our car; changes apply between races. */
+  readonly myCar: CarChoice;
+  setCar(car: CarChoice): void;
   /** Called when race state, players or host change. */
   onChange: () => void;
   /** Called after the world was rebuilt on another track (sim and track are new objects). */
@@ -70,23 +83,48 @@ export class OfflineSession implements Session {
   onTrackChange: () => void = () => {};
   private raceLogic: Race;
   private readonly botIds: string[] = [];
+  botSettings: BotSettings = { ...DEFAULT_BOT_SETTINGS };
 
-  constructor(track: Track, bots: number, tuning?: CarTuning) {
+  constructor(track: Track, bots: number, car: CarChoice, tuning?: CarTuning) {
     this.track = track;
-    this.players.set(this.localId, { id: 1, name: 'You', bot: false });
+    this.players.set(this.localId, { id: 1, name: 'You', bot: false, car });
     for (let i = 0; i < Math.min(7, bots); i++) {
       const id = String(100 + i);
       this.botIds.push(id);
       const taken = [...this.players.values()].map((p) => p.name);
-      this.players.set(id, { id: 100 + i, name: pickBotName(taken, Math.floor(Math.random() * 1000)), bot: true });
+      const pick = Math.floor(Math.random() * 1000);
+      this.players.set(id, {
+        id: 100 + i,
+        name: pickBotName(taken, pick),
+        bot: true,
+        car: {
+          cls: CAR_CLASSES[(pick + i) % CAR_CLASSES.length],
+          color: freeColor([...this.players.values()].map((p) => p.car.color), pick + i * 3),
+        },
+      });
     }
     [this.sim, this.raceLogic] = this.buildWorld(track, tuning);
   }
 
+  get myCar(): CarChoice {
+    return this.players.get(this.localId)!.car;
+  }
+
+  setCar(car: CarChoice): void {
+    if (this.raceLogic.phase !== 'lobby' && this.raceLogic.phase !== 'results') return;
+    this.players.set(this.localId, { ...this.players.get(this.localId)!, car });
+    this.sim.cars.get(this.localId)?.setClass(car.cls);
+    this.onChange();
+  }
+
+  setBotSettings(settings: BotSettings): void {
+    this.botSettings = settings;
+    this.onChange();
+  }
+
   private buildWorld(track: Track, tuning?: CarTuning): [SimWorld, Race] {
     const sim = new SimWorld(track, tuning);
-    sim.addCar(this.localId, 0);
-    this.botIds.forEach((id, i) => sim.addCar(id, i + 1));
+    for (const [id, p] of this.players) sim.addCar(id, id === this.localId ? 0 : this.botIds.indexOf(id) + 1, p.car.cls);
     return [sim, new Race(track)];
   }
 
@@ -121,9 +159,13 @@ export class OfflineSession implements Session {
   step(input: CarInput): void {
     const frozen = this.raceLogic.isFrozen(this.sim.tick);
     const inputs = new Map<string, CarInput>([[this.localId, frozen ? NEUTRAL_INPUT : input]]);
+    const profile = BOT_PROFILES[this.botSettings.difficulty];
+    const me = this.raceLogic.progressOf(this.localId);
     for (const id of this.botIds) {
       const car = this.sim.cars.get(id)!;
-      inputs.set(id, frozen ? NEUTRAL_INPUT : botInput(car, this.track, 0.9));
+      const mine = this.raceLogic.progressOf(id);
+      const driving = this.botSettings.catchUp && me !== null && mine !== null ? catchUpProfile(profile, mine - me) : profile;
+      inputs.set(id, frozen ? NEUTRAL_INPUT : botInput(car, this.track, driving, this.sim.tuning, this.sim.tick * DT));
     }
     this.sim.step(inputs);
     if (this.raceLogic.update(this.sim, this.sim.tick)) this.onChange();
@@ -147,6 +189,7 @@ export class OnlineSession implements Session {
   lastSnapshot: Snapshot | null = null;
   race: RaceState;
   hostId: number | null;
+  botSettings: BotSettings;
   onChange: () => void = () => {};
   onTrackChange: () => void = () => {};
   /** Set by the owner to react to server-side tuning changes. */
@@ -169,12 +212,18 @@ export class OnlineSession implements Session {
     for (const p of welcome.players) this.players.set(String(p.id), p);
     this.race = welcome.race;
     this.hostId = welcome.hostId;
+    this.botSettings = welcome.bots;
     this.applyRace(welcome.race, welcome.tick);
 
     conn.onMessage = (msg) => {
       switch (msg.type) {
         case 'joined':
+        case 'player':
           this.players.set(String(msg.player.id), msg.player);
+          this.onChange();
+          break;
+        case 'bots':
+          this.botSettings = msg.bots;
           this.onChange();
           break;
         case 'left':
@@ -274,6 +323,18 @@ export class OnlineSession implements Session {
 
   selectTrack(id: string): void {
     this.conn.sendMessage({ type: 'track', trackId: id });
+  }
+
+  get myCar(): CarChoice {
+    return this.players.get(String(this.myId))!.car;
+  }
+
+  setCar(car: CarChoice): void {
+    this.conn.sendMessage({ type: 'car', car });
+  }
+
+  setBotSettings(settings: BotSettings): void {
+    this.conn.sendMessage({ type: 'bots', bots: settings });
   }
 
   sendTuning(tuning: CarTuning): void {

@@ -353,6 +353,10 @@ body.touch #debug {
   transform: translateX(-50%);
   z-index: 6;
   width: min(420px, calc(100vw - 32px));
+  /* Tall cards (car picker open) scroll within the screen instead of running off it. */
+  max-height: calc(100vh - var(--safe-top) - var(--safe-bottom) - 40px);
+  overflow-y: auto;
+  border-radius: 12px;
 }
 .card {
   background: rgba(18, 24, 32, 0.82);
@@ -577,4 +581,371 @@ body.touch #minimap {
 /* Phones: keep the lobby/results card clear of the button column on the right. */
 body.touch #race-panel {
   width: min(420px, calc(100vw - 2 * (var(--safe-right) + 56px)));
+}
+
+/* ---------------------------------------------------------------- car picker / lobby extras */
+
+.car-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 4px;
+}
+.car-picker .classes {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 4px;
+}
+.car-picker .cls {
+  padding: 6px 2px !important;
+  min-height: 34px !important;
+  font-size: 12px !important;
+}
+.car-picker .cls.on,
+.card .seg button.on,
+.card .toggle.on {
+  background: rgba(226, 59, 46, 0.85) !important;
+  border-color: #e23b2e !important;
+}
+.car-picker .car-info {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 10px;
+  font-size: 12px;
+}
+.car-picker .tagline {
+  width: 100%;
+  opacity: 0.8;
+}
+.car-picker .stat b {
+  letter-spacing: -1px;
+  color: #ffd84a;
+  font-weight: 400;
+}
+.car-picker .stat .off {
+  color: rgba(255, 255, 255, 0.2);
+}
+.car-picker .colors {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.car-picker .swatch {
+  width: 24px;
+  height: 24px;
+  min-height: 24px !important;
+  padding: 0 !important;
+  border-radius: 50% !important;
+  border: 2px solid rgba(255, 255, 255, 0.25) !important;
+}
+.car-picker .swatch.on {
+  border: 3px solid #fff !important;
+  transform: scale(1.12);
+}
+.dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  margin-right: 5px;
+  vertical-align: middle;
+  border: 1px solid rgba(255, 255, 255, 0.5);
+}
+.card .my-car {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.card .my-car button {
+  margin-left: auto;
+  min-height: 32px;
+  padding: 4px 10px;
+}
+.card .track-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+.card .track-preview {
+  flex: none;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 8px;
+}
+.card .track-side {
+  flex: 1;
+  min-width: 0;
+}
+.card .track-side .track {
+  margin-bottom: 4px;
+}
+.card .track-name {
+  font-weight: 700;
+}
+.card .track-facts {
+  font-size: 12px;
+}
+.card .bots-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.card .seg {
+  display: flex;
+}
+.card .seg button {
+  border-radius: 0;
+  min-height: 32px;
+  padding: 4px 10px;
+}
+.card .seg button:first-child {
+  border-radius: 8px 0 0 8px;
+}
+.card .seg button:last-child {
+  border-radius: 0 8px 8px 0;
+}
+.card .toggle {
+  min-height: 32px;
+  padding: 4px 10px;
+}
+@media (max-height: 500px) {
+  .card .track-preview {
+    width: 110px !important;
+    height: 76px !important;
+  }
+}
+
+/* ---------------------------------------------------------------- start screen (clean) */
+
+#start .start-card {
+  gap: 12px;
+  padding: 22px 22px 16px;
+  width: min(360px, 100%);
+}
+#start .tagline-sm {
+  margin: -6px 0 4px;
+  text-align: center;
+  opacity: 0.7;
+  font-size: 13px;
+}
+#start button.big {
+  min-height: 48px;
+  font-size: 16px;
+}
+#start .divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  opacity: 0.55;
+}
+#start .divider::before,
+#start .divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: rgba(255, 255, 255, 0.3);
+}
+#start button.link {
+  background: none;
+  border: none;
+  text-decoration: underline;
+  opacity: 0.8;
+  min-height: 32px;
+}
+@media (max-height: 500px) {
+  #start .start-card {
+    gap: 7px;
+    padding: 12px 16px 8px;
+  }
+  #start .tagline-sm,
+  #start .divider {
+    display: none;
+  }
+  #start button.big {
+    min-height: 38px;
+  }
+}
+
+/* ---------------------------------------------------------------- lobby card (sections) */
+
+#race-panel:has(.lobby) {
+  width: min(700px, calc(100vw - 32px));
+}
+body.touch #race-panel:has(.lobby) {
+  width: min(700px, calc(100vw - 2 * (var(--safe-right) + 56px)));
+}
+.card.lobby {
+  padding: 14px 16px;
+}
+.lobby header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 12px;
+  font-size: 15px;
+}
+.lobby .header-actions {
+  display: flex;
+  gap: 6px;
+}
+.lobby .header-actions button {
+  min-height: 32px;
+  padding: 4px 12px;
+}
+.lobby .columns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+.lobby section {
+  margin-bottom: 14px;
+}
+.lobby section:last-child {
+  margin-bottom: 0;
+}
+.lobby h3 {
+  margin: 0 0 8px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  opacity: 0.6;
+}
+.lobby .drivers {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+}
+.lobby .drivers li {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.lobby .drivers .who {
+  font-weight: 700;
+  margin-right: 6px;
+}
+.lobby .drivers em {
+  font-style: normal;
+  font-size: 12px;
+  opacity: 0.6;
+}
+.lobby .setting {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 8px;
+}
+.lobby .label-sm {
+  font-size: 12px;
+  opacity: 0.7;
+}
+.lobby .stepper {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.lobby .stepper button {
+  width: 34px;
+  min-height: 32px;
+  padding: 0;
+}
+.lobby .stepper span {
+  min-width: 24px;
+  text-align: center;
+  font-weight: 700;
+}
+.lobby .stepper.track span {
+  flex: 1;
+}
+.lobby .track-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+.lobby .track-side {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.lobby button.start {
+  width: 100%;
+  margin-top: 12px;
+  min-height: 44px;
+  font-size: 15px;
+}
+.lobby .waiting {
+  margin: 12px 0 0;
+  padding: 10px;
+  text-align: center;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.06);
+}
+.lobby .wide table {
+  margin-bottom: 4px;
+}
+.card.lobby-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  font-size: 13px;
+}
+.card.lobby-bar span {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.card.lobby-bar button {
+  min-height: 32px;
+  padding: 4px 12px;
+}
+/* Narrow screens: one column. */
+@media (max-width: 560px) {
+  .lobby .columns {
+    grid-template-columns: 1fr;
+  }
+}
+/* Short screens (landscape phones): tighter. */
+@media (max-height: 500px) {
+  .card.lobby {
+    padding: 10px 12px;
+  }
+  .lobby header {
+    margin-bottom: 8px;
+  }
+  .lobby section {
+    margin-bottom: 8px;
+  }
+  .lobby button.start {
+    margin-top: 8px;
+    min-height: 38px;
+  }
+}
+/* Grid columns may shrink below their content's width (otherwise content overflows the card). */
+.lobby .columns > div {
+  min-width: 0;
+}
+.lobby .track-row {
+  flex-wrap: wrap;
+}
+/* Portrait phones: full width, below the right-hand button column, scrolling if tall. */
+@media (orientation: portrait) {
+  body.touch #race-panel:has(.lobby) {
+    width: calc(100vw - 24px);
+    top: calc(var(--safe-top) + 166px);
+    max-height: calc(100vh - var(--safe-top) - 166px - var(--safe-bottom) - 12px);
+  }
 }

@@ -1,4 +1,5 @@
 import {
+  type CarChoice,
   decodeSnapshot,
   encodeInput,
   type CarInput,
@@ -21,6 +22,7 @@ export interface ConnectOptions {
   room: string | null;
   name: string;
   bots: number;
+  car: CarChoice;
   conditions: NetConditions;
 }
 
@@ -84,7 +86,12 @@ export class Connection {
 
   /** Connect and wait for the server's welcome. */
   static open(opts: ConnectOptions): Promise<{ conn: Connection; welcome: Extract<ServerMessage, { type: 'welcome' }> }> {
-    const params = new URLSearchParams({ name: opts.name, mode: opts.mode });
+    const params = new URLSearchParams({
+      name: opts.name,
+      mode: opts.mode,
+      car: opts.car.cls,
+      color: opts.car.color.toString(16).padStart(6, '0'),
+    });
     if (opts.room) params.set('room', opts.room);
     if (opts.bots) params.set('bots', String(opts.bots));
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';

@@ -1,5 +1,6 @@
 import { RAPIER } from './physics';
 import { Car, HALF_L, HALF_W } from './car';
+import type { CarClass } from './cars';
 import { DEFAULT_TUNING, DT, type CarTuning } from './config';
 import { NEUTRAL_INPUT, type CarInput } from './input';
 import { gridSlot, type Track, type Vec3 } from './track';
@@ -59,10 +60,10 @@ export class SimWorld {
   }
 
   /** Add a car on the starting grid. */
-  addCar(id: string, slot: number): Car {
+  addCar(id: string, slot: number, carClass: CarClass = 'equilibrio'): Car {
     if (this.cars.has(id)) throw new Error(`car ${id} already exists`);
     const g = gridSlot(this.track, slot);
-    const car = new Car(this.world, this.track, id, g.x, g.y, g.z, g.yaw);
+    const car = new Car(this.world, this.track, id, g.x, g.y, g.z, g.yaw, carClass);
     this.cars.set(id, car);
     return car;
   }
@@ -116,6 +117,7 @@ export class SimWorld {
         v: car.body.linvel(),
         w: car.body.angvel().y,
         speed: car.forwardSpeed(),
+        m: car.mass,
       };
     });
 
@@ -147,10 +149,12 @@ export class SimWorld {
         if (closing > 0 && t.bumpSpin > 0) {
           const raCrossN = raz * nx - rax * nz;
           const rbCrossN = rbz * nx - rbx * nz;
-          const j = ((1 + BUMP_RESTITUTION) * closing) / (2 + (raCrossN ** 2 + rbCrossN ** 2) / CAR_INERTIA);
+          const j =
+            ((1 + BUMP_RESTITUTION) * closing) /
+            (1 / a.m + 1 / b.m + raCrossN ** 2 / (a.m * CAR_INERTIA) + rbCrossN ** 2 / (b.m * CAR_INERTIA));
           // a receives +j·n, b receives −j·n.
-          const dwa = (t.bumpSpin * raCrossN * j) / CAR_INERTIA;
-          const dwb = (-t.bumpSpin * rbCrossN * j) / CAR_INERTIA;
+          const dwa = (t.bumpSpin * raCrossN * j) / (a.m * CAR_INERTIA);
+          const dwb = (-t.bumpSpin * rbCrossN * j) / (b.m * CAR_INERTIA);
           a.w += dwa;
           b.w += dwb;
           // A hard twist unsettles the car, letting tyre saturation turn it into a spin.
@@ -160,9 +164,12 @@ export class SimWorld {
 
         const separating = (a.v.x - b.v.x) * nx + (a.v.z - b.v.z) * nz;
         if (separating < t.bumpSeparation) {
-          const dv = (t.bumpSeparation - separating) / 2;
-          a.v = { x: a.v.x + nx * dv, y: a.v.y, z: a.v.z + nz * dv };
-          b.v = { x: b.v.x - nx * dv, y: b.v.y, z: b.v.z - nz * dv };
+          // Split by mass: the lighter car takes more of the shove.
+          const need = t.bumpSeparation - separating;
+          const da = (need * b.m) / (a.m + b.m);
+          const db = (need * a.m) / (a.m + b.m);
+          a.v = { x: a.v.x + nx * da, y: a.v.y, z: a.v.z + nz * da };
+          b.v = { x: b.v.x - nx * db, y: b.v.y, z: b.v.z - nz * db };
         }
         // Glance: nose pointed at the other car? Turn away (parallel to the contact surface).
         for (const [self, sx, sz] of [

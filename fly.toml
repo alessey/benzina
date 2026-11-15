@@ -1,0 +1,35 @@
+# Benzina on Fly.io. One machine: rooms live in the server's memory, so every player in a room
+# must reach the same process (multiple regions need room-aware routing; see milestone 6).
+app = "benzina"
+primary_region = "iad"
+
+[build]
+
+[env]
+  NODE_ENV = "production"
+  PORT = "8080"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  # Stop when nobody is connected (open WebSockets keep it running); start on the next visit
+  # in about a second. Rooms only exist while players are in them, so nothing is lost.
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [http_service.concurrency]
+    type = "connections"
+    soft_limit = 200
+    hard_limit = 250
+
+  [[http_service.checks]]
+    interval = "15s"
+    timeout = "5s"
+    grace_period = "20s"
+    method = "GET"
+    path = "/health"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

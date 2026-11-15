@@ -74,7 +74,7 @@ export class Minimap {
     return [this.ox + x * this.scale, this.oz - z * this.scale];
   }
 
-  update(sim: SimWorld, localId: string | null): void {
+  update(sim: SimWorld, localId: string | null, colorOf: (id: string) => number | undefined = () => undefined): void {
     const now = performance.now();
     if (now - this.lastDraw < 50 || this.canvas.hidden) return;
     this.lastDraw = now;
@@ -90,7 +90,7 @@ export class Minimap {
       const local = id === localId;
       ctx.beginPath();
       ctx.arc(x, y, local ? 5 : 3.6, 0, Math.PI * 2);
-      ctx.fillStyle = `#${carColor(id, local).toString(16).padStart(6, '0')}`;
+      ctx.fillStyle = `#${(colorOf(id) ?? carColor(id, local)).toString(16).padStart(6, '0')}`;
       ctx.fill();
       ctx.lineWidth = local ? 2 : 1;
       ctx.strokeStyle = local ? '#fff' : 'rgba(0,0,0,0.6)';
