@@ -17,6 +17,11 @@ export interface GameScene {
 }
 
 const HORIZON = new THREE.Color(0xcfe3f2);
+/**
+ * The flat ground beyond the terrain sits well below anything near the road, so it can never
+ * cover the road surface (it extends under the whole circuit).
+ */
+const FAR_GROUND_Y = -2;
 const ZENITH = new THREE.Color(0x5d9bd6);
 
 export interface SceneOptions {
@@ -25,20 +30,20 @@ export interface SceneOptions {
 }
 
 /**
- * Draw order for things lying on the ground. The terrain writes depth; the road, curbs and
- * start line are drawn right after it, depth-tested (so hills in front still hide them) but
- * not depth-writing, so each layer paints cleanly over the one below without z-fighting on
- * 16-bit depth buffers (common on mobile). The terrain sits a little below the road surface.
+ * Draw order for things lying on the ground: terrain, then road, curbs, start line, each
+ * drawn after the layer beneath. Every layer writes depth (so the road hides wall bases and
+ * anything else below its surface), and each is pulled toward the camera with a stronger
+ * polygon offset than the one below, so the stack wins its depth tests cleanly even on 16-bit
+ * depth buffers. The terrain also sits 0.45 m under the road.
  */
 const ORDER = { sky: -20, terrain: -10, road: -9, curb: -8, start: -7 } as const;
 
-function surfaceMaterial(params: THREE.MeshLambertMaterialParameters): THREE.MeshLambertMaterial {
+function surfaceMaterial(layer: number, params: THREE.MeshLambertMaterialParameters): THREE.MeshLambertMaterial {
   return new THREE.MeshLambertMaterial({
     ...params,
-    depthWrite: false,
     polygonOffset: true,
-    polygonOffsetFactor: -2,
-    polygonOffsetUnits: -8,
+    polygonOffsetFactor: -2 * layer,
+    polygonOffsetUnits: -8 * layer,
   });
 }
 
@@ -204,9 +209,10 @@ class Terrain {
         // below the centre line, and terrain at centre height would poke through.
         const across = (x - s.x) * -s.tz + (z - s.z) * s.tx;
         const nearRoad = s.y - Math.tan(s.bank) * Math.max(-hw, Math.min(hw, across)) - 0.45;
-        // Edges of the terrain fade to y = 0 to meet the far ground plane.
+        // Edges of the terrain fade down to the far ground plane.
         const edge = Math.min(c, r, this.cols - 1 - c, this.rows - 1 - r) * cell;
-        const natural = this.hills(x, z) * smoothstep(0, 120, edge);
+        const fade = smoothstep(0, 120, edge);
+        const natural = this.hills(x, z) * fade + FAR_GROUND_Y * (1 - fade);
         const w = smoothstep(hw + 4, hw + 50, d);
         this.heights[r * this.cols + c] = nearRoad * (1 - w) + natural * w;
         this.roadDist[r * this.cols + c] = d - hw;
@@ -223,6 +229,11 @@ class Terrain {
     return Math.max(-1, h + 2);
   }
 
+  /**
+   * Height of the rendered terrain surface. Interpolates within the same two triangles the
+   * mesh uses per cell (PlaneGeometry splits each cell along the (c, r+1)–(c+1, r) diagonal),
+   * so this matches what's drawn exactly.
+   */
   heightAt(x: number, z: number): number {
     const fx = (x - this.minX) / this.cell;
     const fz = (z - this.minZ) / this.cell;
@@ -231,9 +242,12 @@ class Terrain {
     const tx = Math.max(0, Math.min(1, fx - c));
     const tz = Math.max(0, Math.min(1, fz - r));
     const h = (cc: number, rr: number) => this.heights[rr * this.cols + cc];
-    return (
-      h(c, r) * (1 - tx) * (1 - tz) + h(c + 1, r) * tx * (1 - tz) + h(c, r + 1) * (1 - tx) * tz + h(c + 1, r + 1) * tx * tz
-    );
+    if (tx + tz <= 1) {
+      // Triangle (c, r), (c+1, r), (c, r+1).
+      return h(c, r) + (h(c + 1, r) - h(c, r)) * tx + (h(c, r + 1) - h(c, r)) * tz;
+    }
+    // Triangle (c+1, r+1), (c, r+1), (c+1, r).
+    return h(c + 1, r + 1) + (h(c, r + 1) - h(c + 1, r + 1)) * (1 - tx) + (h(c + 1, r) - h(c + 1, r + 1)) * (1 - tz);
   }
 
   mesh(): THREE.Mesh {
@@ -286,7 +300,7 @@ function buildFarGround(track: Track): THREE.Mesh {
   const b = track.bounds;
   const mesh = new THREE.Mesh(new THREE.PlaneGeometry(6000, 6000), new THREE.MeshLambertMaterial({ color: 0x6a9442 }));
   mesh.rotation.x = -Math.PI / 2;
-  mesh.position.set((b.minX + b.maxX) / 2, -0.05, (b.minZ + b.maxZ) / 2);
+  mesh.position.set((b.minX + b.maxX) / 2, FAR_GROUND_Y, (b.minZ + b.maxZ) / 2);
   mesh.renderOrder = ORDER.terrain;
   return mesh;
 }
@@ -325,7 +339,7 @@ function stripGeometry(a: Vec3[], b: Vec3[], lift: number, colorOf?: (i: number)
 }
 
 function buildRoad(track: Track): THREE.Mesh {
-  const mesh = new THREE.Mesh(stripGeometry(track.leftEdge, track.rightEdge, 0.02), surfaceMaterial({ color: 0x3d3f44 }));
+  const mesh = new THREE.Mesh(stripGeometry(track.leftEdge, track.rightEdge, 0.02), surfaceMaterial(1, { color: 0x3d3f44 }));
   mesh.receiveShadow = true;
   mesh.renderOrder = ORDER.road;
   return mesh;
@@ -348,7 +362,7 @@ function buildCurbs(track: Track): THREE.Mesh[] {
   const red = new THREE.Color(0xd23a2e);
   const white = new THREE.Color(0xf2f2f2);
   const stripe = (i: number) => (Math.floor(i / 2) % 2 === 0 ? red : white);
-  const mat = surfaceMaterial({ vertexColors: true });
+  const mat = surfaceMaterial(2, { vertexColors: true });
   return [track.leftEdge, track.rightEdge].map((edge) => {
     const mesh = new THREE.Mesh(stripGeometry(edge, offsetEdge(track, edge, 0.9), 0.04, stripe), mat);
     mesh.receiveShadow = true;
@@ -371,12 +385,46 @@ function buildStartLine(track: Track): THREE.Mesh {
   }
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace;
+  // A strip lying exactly on the road: corners come from the road's own (banked, sloped) edges,
+  // so the line never floats above or sinks into the surface.
   const s0 = track.samples[0];
-  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(track.def.width, track.def.width / 4), surfaceMaterial({ map: tex }));
-  mesh.rotation.order = 'YXZ';
-  mesh.rotation.y = Math.atan2(s0.tx, s0.tz);
-  mesh.rotation.x = -Math.PI / 2 - Math.atan(s0.slope);
-  mesh.position.set(s0.x, s0.y + 0.06, s0.z);
+  const half = track.def.width / 8; // the line is a quarter of the road width deep
+  const lift = 0.06;
+  const left = track.leftEdge[0];
+  const right = track.rightEdge[0];
+  const cols = 8;
+  const pos: number[] = [];
+  const uv: number[] = [];
+  const idx: number[] = [];
+  for (const [row, along] of [-half, half].entries()) {
+    for (let c = 0; c <= cols; c++) {
+      const t = c / cols;
+      pos.push(
+        left.x + (right.x - left.x) * t + s0.tx * along,
+        left.y + (right.y - left.y) * t + s0.slope * along + lift,
+        left.z + (right.z - left.z) * t + s0.tz * along,
+      );
+      uv.push(t, row);
+    }
+  }
+  for (let c = 0; c < cols; c++) {
+    const a = c;
+    const b = c + 1;
+    const d = c + cols + 1;
+    const e = c + cols + 2;
+    idx.push(a, d, b, b, d, e);
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  geo.setIndex(idx);
+  geo.computeVertexNormals();
+  // Make sure it faces up whichever way round the edges are.
+  if (geo.getAttribute('normal').getY(0) < 0) {
+    geo.setIndex(idx.map((_, i) => idx[i - (i % 3) + [0, 2, 1][i % 3]]));
+    geo.computeVertexNormals();
+  }
+  const mesh = new THREE.Mesh(geo, surfaceMaterial(3, { map: tex }));
   mesh.receiveShadow = true;
   mesh.renderOrder = ORDER.start;
   return mesh;
@@ -384,8 +432,9 @@ function buildStartLine(track: Track): THREE.Mesh {
 
 function buildWalls(track: Track): THREE.InstancedMesh {
   const { wallHeight, wallThickness } = track.def;
-  // Boxes reach a little below the road so stepped segments on slopes leave no gaps.
-  const below = 0.8;
+  // Boxes reach down to terrain level (0.45 m under the road) so stepped segments on slopes
+  // leave no gaps; the road surface hides the part below it.
+  const below = 0.5;
   const mesh = new THREE.InstancedMesh(
     new THREE.BoxGeometry(wallThickness, wallHeight + below, 1),
     new THREE.MeshLambertMaterial({ color: 0xe8e4da }),

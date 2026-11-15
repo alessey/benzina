@@ -64,6 +64,9 @@ export interface Track {
   bounds: { minX: number; maxX: number; minZ: number; maxZ: number; maxY: number };
 }
 
+/** Lowest a road edge may sit above y = 0 (the physics ground), metres. */
+const EDGE_CLEARANCE = 0.05;
+
 /** Steepest bank, radians (~10 degrees). */
 const MAX_BANK = 0.18;
 /** Bank per unit curvature: a 60 m radius corner reaches the maximum. */
@@ -142,6 +145,14 @@ export function buildTrack(def: TrackDef): Track {
     6,
   );
 
+  // Banking lowers the inside edge below the centre line. Where the track is near ground level
+  // that would put the edge underground (below the physics ground, and under the scenery's
+  // ground plane), so lift the road there, smoothly, until both edges sit at or above y = 0.
+  const hw = def.width / 2;
+  const needed = points.map((p, i) => Math.max(0, hw * Math.sin(Math.abs(bank[i])) + EDGE_CLEARANCE - p.y));
+  const lift = smooth(needed, 12).map((v, i) => Math.max(v, needed[i]));
+  points.forEach((p, i) => (p.y += lift[i]));
+
   const samples: TrackSample[] = points.map((p, i) => {
     const prev = points[(i - 1 + count) % count];
     const next = points[(i + 1) % count];
@@ -157,7 +168,6 @@ export function buildTrack(def: TrackDef): Track {
     };
   });
 
-  const hw = def.width / 2;
   const leftEdge: Vec3[] = [];
   const rightEdge: Vec3[] = [];
   for (const s of samples) {

@@ -46,6 +46,9 @@ describe.each(TRACKS.map((def) => [def.name, def] as const))('%s', (_name, def) 
     expect(maxGrade).toBeLessThan(0.12);
     expect(minRadius).toBeGreaterThan(14);
     expect(Math.min(...track.samples.map((s) => s.y))).toBeGreaterThanOrEqual(0);
+    // Both edges stay above ground even on banked corners (else the ground covers the road).
+    const lowestEdge = Math.min(...track.leftEdge.map((e) => e.y), ...track.rightEdge.map((e) => e.y));
+    expect(lowestEdge).toBeGreaterThanOrEqual(0.04);
   });
 
   it('the autopilot laps it cleanly: no falls, resets, or scraping the road', () => {
