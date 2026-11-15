@@ -92,7 +92,7 @@ packages/
 ### Netcode
 
 - Clients send one 8-byte input per tick (quantized, and the client predicts with the quantized value).
-  The server sends a ~84-byte-per-car snapshot at 30 Hz (~3 KB/s solo, ~10 KB/s with four cars).
+  The server sends a ~92-byte-per-car snapshot at 30 Hz (~3 KB/s solo, ~11 KB/s with four cars).
 - **Server: one input per tick, always.** Each tick consumes the next input seq for each player. If it
   hasn't arrived, the server simulates with a guess (the previous input) and discards the real one
   when it turns up late. Client and server timelines stay aligned 1:1, so a network stall only costs
@@ -103,24 +103,49 @@ packages/
 - **Time sync.** Snapshots report how many of your inputs the server has queued; the client runs its
   clock up to ±5% fast or slow to keep about 2 queued, just ahead of when they're needed.
 - **Time sync, continued.** The snapshot's signed `lead` goes negative when inputs arrive too late.
-  If that persists (a backgrounded tab, a dead link), the client skips its sequence numbers forward
-  to catch up. A brief stall is left alone because it clears by itself. The target lead adapts
-  (2–8 ticks) to jittery links such as mobile data.
+  The client tells "I fell behind" apart from "the network stalled":
+  - After a hitch shorter than 1 s, the client runs the missed ticks, so it stays on time without skipping.
+  - If it dropped real time (a backgrounded tab), it skips its sequence numbers forward right away.
+    The skipped seqs are filled with the server's own guess, so the replay stays continuous.
+  - If inputs are late for ~1 s for any other reason, it skips as a fallback. Network stalls are
+    otherwise left alone, because skipping on them would push every remote car into the future.
+
+  The target lead adapts (2–8 ticks) to jittery links such as mobile data. No replay happens until
+  the server has acknowledged our first input.
+- **Frame order:** run ticks first, then reconcile. After a long frame, "before" and "after" then
+  describe the same moment, and corrections reflect misprediction rather than time spent frozen.
 - **Silent players coast.** The server repeats a missing player's last input for at most 500 ms, then
   applies neutral controls, so a locked phone doesn't leave a car driving into a wall.
 - **Smoothing.** Corrections become a visual offset that decays over ~100 ms; teleports (>6 m) snap.
+- **Car-to-car bumps.** Rapier still stops cars passing through each other. On top of it, an arcade
+  layer, computed from positions and headings and visited in id order (state-free, so replay stays
+  exact), pushes touching cars apart to at least `bumpSeparation` and turns a car pointed into
+  another parallel to it. Bumps become crisp shoves, not grinds: side-swipe contact went from 164
+  ticks to ~26, and rear-end from 107 to 6. Shorter contacts are also easier to predict.
+- **Spins from off-centre hits.** A rigid-body impulse at the estimated contact point twists both
+  cars (`bumpSpin`, 2 = twice physical, for arcade drama). A square rear-end gives no spin; a hit
+  on the rear quarter gives a lot. The twist also raises the car's `upset` (0..1, networked state),
+  which switches on tyre saturation: past a slip angle measured at the rear axle, grip and yaw
+  stability fall away, so a solid hit turns into a spin-out. Light taps only wobble the car.
+  `upset` fades once the tyres grip again, and stability returns as the car slows, so spun cars
+  always recover. Your own handbrake turns and cornering never set `upset`, so they handle exactly
+  as before.
 - **Cheap physics.** Each wall side is one triangle-mesh collider (4x cheaper per step than hundreds
   of boxes): a step with 8 cars is ~0.05 ms on desktop, which matters because clients re-simulate
   ~10–20 ticks per snapshot, and phones are several times slower.
-- Tested in-process (`packages/server/test/netcode.test.ts`): real Room + Predictor over a fake link
-  with latency and TCP-style stalls.
+- Tested in-process: a real Room and N client Predictors over fake links with latency, TCP-style stalls
+  and low-fps bursty clients (`packages/server/test/harness.ts`). Covers netcode (`netcode.test.ts`) and
+  collisions: grid pile-ups, server bots at 20 fps, and aggressive swerving at ~200 ms RTT with stalls
+  (`collisions.test.ts`). Bump feel is pinned down in `packages/shared/test/bumps.ts`.
+- In dev builds, `window.__benzina` exposes every correction and a per-snapshot timeline, so headless
+  Chrome (over the DevTools protocol) can measure a live session.
 
 ## Roadmap
 
 1. ✅ Local arcade car on a test track, tuning panel, lap timer
 2. ✅ Server runs `SimWorld`; client prediction + reconciliation; rooms; debug overlay; bots
    - ✅ Mobile: touch controls, phone layouts, adaptive quality, backgrounded-tab recovery
-3. Car-to-car collisions: tune bump response and remote-car prediction (forward prediction is in place)
+3. ✅ Car-to-car collisions: arcade bump layer, collision netcode harness, time-sync hardening
 4. Race flow: lobby → countdown → race → results; checkpoints, positions, room codes
 5. Art, sound, more tracks
 6. Accounts, leaderboards, multiple regions

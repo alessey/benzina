@@ -10,6 +10,8 @@ export interface CarState {
   w: [number, number, number];
   /** Smoothed steering value (-1..1). */
   steer: number;
+  /** 0..1, how unsettled the car is after a hit (see Car.upset). */
+  upset: number;
 }
 
 /** Signed yaw (rotation about +Y) from a quaternion. */

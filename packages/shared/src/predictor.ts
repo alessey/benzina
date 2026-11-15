@@ -9,11 +9,18 @@ const MAX_TARGET_LEAD = 8;
 /** Snapshots per adaptation window (~1 s at 30 Hz). */
 const LEAD_WINDOW = 30;
 /**
- * Skip our sequence numbers forward only when persistently late (a backgrounded tab, a
- * dead link), not during a brief stall, which clears up by itself once data flows again.
+ * When the server reports our inputs arriving late (it already simulated those ticks with a
+ * guess), we may need to skip our sequence numbers forward. "Late" has two causes:
+ *  - We dropped time (a frame too long to catch up on, e.g. a backgrounded tab): we really
+ *    are behind. Skip right away. (Shorter hitches are caught up by running the missed
+ *    ticks, after which our inputs are on time again without skipping.)
+ *  - The network stalled: we're on time, our inputs are just stuck in transit. Skipping
+ *    would push us ahead of the server for no reason, so only skip if it persists.
  */
-const SKIP_IF_LATER_THAN = 30;
-const SKIP_AFTER_LATE_SNAPSHOTS = 10;
+const SKIP_IF_LATER_THAN = 3;
+const SKIP_AFTER_LATE_SNAPSHOTS = 30;
+/** After dropping time, eager skipping stays enabled for this many ticks. */
+const HITCH_WINDOW_TICKS = 60;
 /** Cap on unacknowledged inputs (2 s). Beyond this the server is clearly not keeping up. */
 const MAX_PENDING = 120;
 
@@ -41,10 +48,14 @@ export class Predictor {
   timeScale = 1;
   /** How many inputs ahead of the server we aim to be; grows on jittery links. */
   targetLead = MIN_TARGET_LEAD;
+  /** Times we've skipped sequence numbers to catch up (diagnostic). */
+  skips = 0;
   private nextSeq = 1;
   /** After skipping ahead, ignore "late" reports until the server reaches this seq. */
   private skipSettlesAt = 0;
   private lateStreak = 0;
+  private hitchUntilTick = -1;
+  private replaying = false;
   private windowMinLead = Infinity;
   private windowCount = 0;
   private calmWindows = 0;
@@ -58,6 +69,14 @@ export class Predictor {
 
   get pendingCount(): number {
     return this.pending.length;
+  }
+
+  /**
+   * Tell the predictor the client skipped simulating some real time (a frame longer than it
+   * is willing to catch up on), so late reports right after are our fault, not the network's.
+   */
+  noteDroppedTime(seconds: number): void {
+    if (seconds > 0.05) this.hitchUntilTick = this.tick + HITCH_WINDOW_TICKS;
   }
 
   /** Simulate one live tick with a fresh local input. Returns what to send to the server. */
@@ -94,14 +113,25 @@ export class Predictor {
     for (const [id, car] of sim.cars) before.set(id, car.getState());
 
     for (const c of snap.cars) sim.cars.get(String(c.id))!.setState(c.state);
-    this.pending = this.pending.filter((p) => p.seq > snap.ack);
-    for (const p of this.pending) sim.step(this.inputsFor(p.input));
-
     this.syncClock(snap);
+    this.pending = this.pending.filter((p) => p.seq > snap.ack);
+    // ack 0: the server hasn't consumed any of our inputs yet, so it hasn't mapped our
+    // sequence numbers onto its ticks. Replaying now would predict every car too far ahead
+    // and snap back once acks begin. Show the server state until then (one round trip).
+    const firstReplay = snap.ack > 0 && !this.replaying;
+    if (snap.ack > 0) {
+      this.replaying = true;
+      for (const p of this.pending) sim.step(this.inputsFor(p.input));
+    }
+
 
     const corrections: Correction[] = [];
     for (const [id, car] of sim.cars) {
-      corrections.push({ id, before: before.get(id) ?? car.getState(), after: car.getState() });
+      const after = car.getState();
+      // The first replay jumps every car from "server state" to "predicted now". That's a
+      // change of timeline, not a misprediction: report no correction, so renderers snap
+      // instead of gliding from the old position.
+      corrections.push({ id, before: firstReplay ? after : (before.get(id) ?? after), after });
     }
     return corrections;
   }
@@ -114,10 +144,17 @@ export class Predictor {
    */
   private syncClock(snap: Snapshot): void {
     this.lateStreak = snap.lead < 0 ? this.lateStreak + 1 : 0;
-    const persistentlyLate = snap.lead < -SKIP_IF_LATER_THAN || this.lateStreak >= SKIP_AFTER_LATE_SNAPSHOTS;
-    if (persistentlyLate && snap.ack >= this.skipSettlesAt) {
-      this.nextSeq += -snap.lead + this.targetLead;
+    const weHitched = this.tick <= this.hitchUntilTick && snap.lead < -SKIP_IF_LATER_THAN;
+    const persistentlyLate = this.lateStreak >= SKIP_AFTER_LATE_SNAPSHOTS;
+    if ((weHitched || persistentlyLate) && snap.ack >= this.skipSettlesAt) {
+      // The server will simulate the skipped seqs with a guess: its last input from us.
+      // Queue the same guess locally so the replay covers exactly the ticks the server will
+      // run; otherwise every car would be predicted short by the gap and visibly jump back.
+      const skip = -snap.lead + this.targetLead;
+      const guess = { ...(this.pending[this.pending.length - 1]?.input ?? NEUTRAL_INPUT), reset: false };
+      for (let i = 0; i < skip; i++) this.pending.push({ seq: this.nextSeq++, input: guess });
       this.skipSettlesAt = this.nextSeq;
+      this.skips++;
       this.lateStreak = 0;
     }
 

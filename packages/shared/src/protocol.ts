@@ -89,10 +89,11 @@ export interface Snapshot {
 
 // Header: type u8, tick u32, ack u32, lead i8, count u8.
 const SNAP_HEADER = 11;
-// Per car: id u8, p 3×f64, q (y, w) 2×f64, v 3×f64, w.y f64, steer f64, input 3B.
+// Per car: id u8, p 3×f64, q (y, w) 2×f64, v 3×f64, w.y f64, steer f64, upset f64, input 3B.
 // Rotations are yaw-only (roll/pitch locked), so q.x and q.z are always zero.
 // f64 keeps client re-simulation close to the server's; quantize later if bandwidth matters.
-const SNAP_CAR = 1 + 8 * 10 + INPUT_BYTES;
+const SNAP_FLOATS = 11;
+const SNAP_CAR = 1 + 8 * SNAP_FLOATS + INPUT_BYTES;
 
 /**
  * Encode the car section once per snapshot; each recipient gets its own header
@@ -109,7 +110,7 @@ export function encodeSnapshot(tick: number, cars: SnapshotCar[]): Uint8Array {
     const s = c.state;
     view.setUint8(o, c.id);
     o += 1;
-    for (const n of [s.p[0], s.p[1], s.p[2], s.q[1], s.q[3], s.v[0], s.v[1], s.v[2], s.w[1], s.steer]) {
+    for (const n of [s.p[0], s.p[1], s.p[2], s.q[1], s.q[3], s.v[0], s.v[1], s.v[2], s.w[1], s.steer, s.upset]) {
       view.setFloat64(o, n);
       o += 8;
     }
@@ -139,7 +140,7 @@ export function decodeSnapshot(buf: Uint8Array): Snapshot | null {
     const id = view.getUint8(o);
     o += 1;
     const f: number[] = [];
-    for (let k = 0; k < 10; k++) {
+    for (let k = 0; k < SNAP_FLOATS; k++) {
       f.push(view.getFloat64(o));
       o += 8;
     }
@@ -151,6 +152,7 @@ export function decodeSnapshot(buf: Uint8Array): Snapshot | null {
         v: [f[5], f[6], f[7]],
         w: [0, f[8], 0],
         steer: f[9],
+        upset: f[10],
       },
       input: readInput(view, o),
     });

@@ -24,6 +24,8 @@ export interface Session {
   poll(): Correction[] | null;
   /** Run one live tick with the local player's controls. */
   step(input: CarInput): void;
+  /** Real time the frame loop declined to simulate (frame longer than the catch-up cap), seconds. */
+  noteDroppedTime(seconds: number): void;
 }
 
 export class OfflineSession implements Session {
@@ -44,6 +46,8 @@ export class OfflineSession implements Session {
   poll(): null {
     return null;
   }
+
+  noteDroppedTime(): void {}
 
   step(input: CarInput): void {
     this.sim.step(new Map([[this.localId, input]]));
@@ -121,6 +125,10 @@ export class OnlineSession implements Session {
     if (!this.localId || !this.connected) return;
     const { seq, input: sent } = this.predictor.step(input);
     this.conn.sendInput(seq, sent);
+  }
+
+  noteDroppedTime(seconds: number): void {
+    this.predictor.noteDroppedTime(seconds);
   }
 
   sendTuning(tuning: CarTuning): void {

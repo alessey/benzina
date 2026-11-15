@@ -5,11 +5,16 @@ import { type CarState, yawOf, yawQuat } from './state';
 import { nearestSampleIndex, nearestSampleIndexNear, rightOf, type Track } from './track';
 
 const FALL_RESET_Y = -10;
+/** Below this speed (m/s) yaw stability returns in full, so spins always wind down. */
+const SPIN_FADE_SPEED = 20;
+/** How fast `upset` fades (per second) once the tyres grip again, and while still sliding. */
+const UPSET_FADE_GRIPPING = 0.8;
+const UPSET_FADE_SLIDING = 0.15;
 /** Closer than this to a wall (metres) counts as touching it. */
 const WALL_CONTACT_GAP = 0.08;
 /** Full extents of the car's collider, including the rounded border. */
-const HALF_W = CAR_SHAPE.halfWidth + CAR_SHAPE.borderRadius;
-const HALF_L = CAR_SHAPE.halfLength + CAR_SHAPE.borderRadius;
+export const HALF_W = CAR_SHAPE.halfWidth + CAR_SHAPE.borderRadius;
+export const HALF_L = CAR_SHAPE.halfLength + CAR_SHAPE.borderRadius;
 
 function clamp(v: number, lo: number, hi: number): number {
   return v < lo ? lo : v > hi ? hi : v;
@@ -34,11 +39,25 @@ export class Car {
   readonly collider: RAPIER.Collider;
   /** Smoothed steering (-1..1); part of the simulated state. */
   steer = 0;
+  /**
+   * 0..1: how unsettled the car is after being hit. At 0 the handling is the normal arcade
+   * model; as it rises, tyre saturation takes over, so a hard knock to the tail can spin the
+   * car. Raised by collisions, fades once the tyres grip again. Part of the simulated state.
+   */
+  upset = 0;
   grounded = false;
   /** Which wall the car is touching this tick: 1 right, -1 left, 0 none. (Derived, not state.) */
   wallSide: -1 | 0 | 1 = 0;
   /** Search hint for the nearest centre-line sample. Only speeds up the search. */
   private sampleHint = 0;
+  /**
+   * Extra yaw rate this tick from glancing off other cars (set by SimWorld before controls).
+   * Derived from positions each tick, so it isn't part of the networked state.
+   */
+  bumpYaw = 0;
+  /** Rear-axle slip angle (rad) and remaining tyre grip fraction last tick (diagnostics). */
+  slip = 0;
+  tyre = 1;
 
   constructor(
     private readonly world: RAPIER.World,
@@ -140,6 +159,22 @@ export class Car {
       this.wallSide = wall.side;
       if (wall.side !== 0) vF = approach(vF, 0, t.wallFriction * dt);
 
+      // Tyre saturation: past the peak slip angle, grip and steering authority fall away, so
+      // a hard hit turns into a slide or spin you have to catch. Slip is measured at the rear
+      // axle: in normal cornering the car pivots there (no slip), but when the tail is knocked
+      // sideways, rotation sweeps the rear tyres sideways and they let go. Below ~2 m/s slip is
+      // meaningless and the tyres simply grip.
+      const planar = Math.hypot(vF, vL);
+      const rearLateral = vL + yawRate * t.pivotOffset;
+      const slip = planar > 2 ? Math.atan2(Math.abs(rearLateral), Math.abs(vF)) : 0;
+      const slide = clamp((slip - t.tireSlipPeak) / Math.max(1e-3, t.tireSlipFull - t.tireSlipPeak), 0, 1);
+      // Tyre saturation only applies while the car is upset by a hit: your own driving
+      // (handbrake turns, hard cornering) keeps the forgiving arcade behaviour.
+      const tyre = 1 - this.upset * slide * (1 - t.tireSlideGrip);
+      this.slip = slip;
+      this.tyre = tyre;
+      this.upset = Math.max(0, this.upset - dt * (slide < 0.2 ? UPSET_FADE_GRIPPING : UPSET_FADE_SLIDING));
+
       const speed = Math.abs(vF);
       const lowSpeedFactor = clamp(speed / t.steerFullSpeed, 0, 1);
       const highSpeedFactor = 1 + (t.highSpeedSteer - 1) * clamp(speed / t.maxSpeed, 0, 1);
@@ -150,12 +185,18 @@ export class Car {
       // Pointed into the wall? Turn parallel to it so the car glances off instead of pinning.
       // (Turning away from the right wall is a left turn, i.e. positive yaw.)
       if (wall.side !== 0 && wall.into > 0) targetYawRate += wall.side * wall.into * t.wallDeflect * Math.sign(vF);
-      yawRate += (targetYawRate - yawRate) * (1 - Math.exp(-t.yawResponse * dt));
+      targetYawRate += this.bumpYaw;
+      // The pull toward the steering's yaw rate is what the rear tyres provide; it collapses
+      // quickly once they slide (cubed), so a hard knock to the tail can turn into a spin.
+      // A spin always winds down as the car slows.
+      const lowSpeedFloor = clamp(1 - planar / SPIN_FADE_SPEED, 0, 1);
+      const stability = Math.max(tyre * tyre * tyre, lowSpeedFloor);
+      yawRate += (targetYawRate - yawRate) * (1 - Math.exp(-t.yawResponse * stability * dt));
 
       // Grip pulls sideways velocity toward what turning around the rear axle implies:
       // the centre moves toward the inside of the turn, so the tail doesn't swing out.
-      const grip = input.handbrake ? t.driftGrip : t.grip;
-      const vLTarget = -yawRate * t.pivotOffset;
+      const grip = (input.handbrake ? t.driftGrip : t.grip) * tyre;
+      const vLTarget = -yawRate * t.pivotOffset * tyre;
       vL = vLTarget + (vL - vLTarget) * Math.exp(-grip * dt);
 
       let vx = fx * vF + rx * vL;
@@ -202,8 +243,12 @@ export class Car {
     const reach = HALF_L * Math.abs(fDotR) + HALF_W * Math.abs(carRightDotR);
     const halfRoad = this.track.def.width / 2;
 
+    // Only near the road edge: a car somehow beyond the walls (or in a test arena off the
+    // circuit) isn't scraping anything.
+    const beyond = Math.abs(offset) - reach > halfRoad + 0.5;
     let side: -1 | 0 | 1 = 0;
-    if (halfRoad - (offset + reach) < WALL_CONTACT_GAP) side = 1;
+    if (beyond) side = 0;
+    else if (halfRoad - (offset + reach) < WALL_CONTACT_GAP) side = 1;
     else if (halfRoad - (reach - offset) < WALL_CONTACT_GAP) side = -1;
     return { side, nx: r.x, nz: r.z, into: Math.max(0, side * fDotR) };
   }
@@ -216,6 +261,7 @@ export class Car {
     this.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
     this.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
     this.steer = 0;
+    this.upset = 0;
   }
 
   getState(): CarState {
@@ -229,6 +275,7 @@ export class Car {
       v: [v.x, v.y, v.z],
       w: [w.x, w.y, w.z],
       steer: this.steer,
+      upset: this.upset,
     };
   }
 
@@ -238,5 +285,6 @@ export class Car {
     this.body.setLinvel({ x: s.v[0], y: s.v[1], z: s.v[2] }, true);
     this.body.setAngvel({ x: s.w[0], y: s.w[1], z: s.w[2] }, true);
     this.steer = s.steer;
+    this.upset = s.upset;
   }
 }

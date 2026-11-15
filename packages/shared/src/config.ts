@@ -52,6 +52,21 @@ export interface CarTuning {
   wallDeflect: number;
   /** Sideways speed away from a wall when touching it and steering away, m/s (at full lock). */
   wallPushOff: number;
+  /** Touching cars always separate at least this fast (m/s), so bumps shove instead of grind. */
+  bumpSeparation: number;
+  /** How strongly a car pointed into another car is turned parallel to it (rad/s per unit). */
+  bumpDeflect: number;
+  /**
+   * Spin from off-centre hits, as a fraction of the physically correct amount (1 = physical).
+   * A tap on the rear quarter turns a car; a centred rear-end hit doesn't.
+   */
+  bumpSpin: number;
+  /** Tyre saturation (applies only while a car is upset by a hit). Slip angle (rad) of full grip. */
+  tireSlipPeak: number;
+  /** Slip angle (rad) at which tyres are fully sliding. */
+  tireSlipFull: number;
+  /** Fraction of grip and steering authority left when fully sliding. */
+  tireSlideGrip: number;
 }
 
 export const DEFAULT_TUNING: CarTuning = {
@@ -77,6 +92,12 @@ export const DEFAULT_TUNING: CarTuning = {
   wallFriction: 14,
   wallDeflect: 6,
   wallPushOff: 3,
+  bumpSeparation: 3,
+  bumpDeflect: 4,
+  bumpSpin: 2,
+  tireSlipPeak: 0.1,
+  tireSlipFull: 0.35,
+  tireSlideGrip: 0.15,
 };
 
 /** Car collision box, metres. Collider is a rounded cuboid: half extents + border radius. */

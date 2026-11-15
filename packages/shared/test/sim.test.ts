@@ -12,6 +12,7 @@ import {
   yawQuat,
   type CarInput,
 } from '../src';
+import { bump } from './bumps';
 
 const track = buildTrack(DEFAULT_TRACK);
 
@@ -129,6 +130,7 @@ describe('SimWorld', () => {
         v: [s.tx * 40, 0, s.tz * 40],
         w: [0, 0, 0],
         steer: 0,
+        upset: 0,
       });
       return { sim, car };
     }
@@ -177,6 +179,77 @@ describe('SimWorld', () => {
       // Free-running, the car would accelerate toward maxSpeed (45); grinding the wall holds it well below.
       expect(car.forwardSpeed()).toBeLessThan(sim.tuning.maxSpeed * 0.8);
       sim.free();
+    });
+  });
+
+  describe('car-to-car bumps', () => {
+    it('side swipe: a crisp shove, not a 3-second grind', () => {
+      const r = bump(track, 'sideswipe');
+      expect(r.contact).toBe(true);
+      expect(r.contactTicks).toBeLessThan(45); // was 164 ticks of rubbing before the bump layer
+      expect(r.victimLateral).toBeGreaterThan(1.5); // you feel it
+      expect(r.victimHeadingChange).toBeLessThan(0.5); // but it doesn't spin you out
+    });
+
+    it('rear-end: momentum transfers and the cars separate', () => {
+      const r = bump(track, 'rear-end');
+      expect(r.contactTicks).toBeLessThan(20); // was 107: a pushing train
+      expect(r.victimSpeedChange).toBeGreaterThan(5); // shoved forward
+      expect(r.attackerSpeedChange).toBeLessThan(-1); // the rammer pays for it (even on full throttle)
+      expect(r.victimHeadingChange).toBeLessThan(0.05); // a square hit doesn't spin anyone
+    });
+
+    it('T-bone: the struck car is shoved, not spun', () => {
+      // The attacker keeps its foot down and pushes the (now sliding) car along for a while.
+      const r = bump(track, 't-bone');
+      expect(r.contactTicks).toBeLessThan(60);
+      expect(r.victimSpin).toBeLessThan(2);
+      expect(r.victimHeadingChange).toBeLessThan(0.3);
+    });
+
+    it('a solid hit on the rear quarter spins the car out (PIT)', () => {
+      const r = bump(track, 'pit', undefined, 8);
+      expect(r.victimHeadingChange).toBeGreaterThan(1.5); // > 85 degrees
+    });
+
+    it('a light tap on the rear quarter only unsettles it', () => {
+      const r = bump(track, 'pit', undefined, 3);
+      expect(r.victimHeadingChange).toBeGreaterThan(0.05);
+      expect(r.victimHeadingChange).toBeLessThan(0.5);
+    });
+
+    it('spun cars always recover', () => {
+      for (const closing of [5, 8, 12, 16]) {
+        const r = bump(track, 'pit', undefined, closing);
+        expect(r.victimYawRateLater).toBeLessThan(0.1);
+        expect(r.victimTyreLater).toBeGreaterThan(0.95);
+      }
+    });
+
+    it('your own handbrake turns are unaffected by the spin model', () => {
+      // Tyre saturation only applies to cars upset by a hit. Same numbers as before it existed.
+      const headingAfterHandbrake = (ticks: number) => {
+        const sim = new SimWorld(track);
+        const car = sim.addCar('a', 0);
+        const q = yawQuat(0);
+        car.setState({ p: [-300, car.body.translation().y, -300], q: [q.x, q.y, q.z, q.w], v: [0, 0, 35], w: [0, 0, 0], steer: 0, upset: 0 });
+        let max = 0;
+        for (let t = 0; t < 180; t++) {
+          sim.step(new Map([['a', input({ throttle: 1, steer: t < ticks ? 1 : 0, handbrake: t < ticks })]]));
+          const r = car.body.rotation();
+          max = Math.max(max, Math.abs(2 * Math.atan2(r.y, r.w)));
+        }
+        sim.free();
+        return max;
+      };
+      expect(headingAfterHandbrake(20)).toBeLessThan(1);
+      expect(headingAfterHandbrake(40)).toBeLessThan(2);
+    });
+
+    it('nothing ever launches a car into the air', () => {
+      for (const kind of ['sideswipe', 'rear-end', 't-bone'] as const) {
+        expect(bump(track, kind).maxRise).toBeLessThan(0.1);
+      }
     });
   });
 });
