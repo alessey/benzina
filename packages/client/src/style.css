@@ -1,0 +1,59 @@
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: #9cc7e8;
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  color: #fff;
+}
+canvas {
+  display: block;
+}
+#hud {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.6);
+}
+#lap {
+  position: absolute;
+  top: 16px;
+  left: 16px;
+  font-size: 18px;
+  line-height: 1.5;
+}
+.label {
+  display: inline-block;
+  width: 4.5em;
+  opacity: 0.75;
+  font-size: 13px;
+}
+#speed {
+  position: absolute;
+  right: 24px;
+  bottom: 20px;
+  font-size: 56px;
+  font-weight: 700;
+}
+#speed .unit {
+  font-size: 16px;
+  margin-left: 6px;
+  opacity: 0.75;
+}
+#help {
+  position: absolute;
+  left: 16px;
+  bottom: 16px;
+  font-size: 12px;
+  opacity: 0.8;
+  line-height: 1.6;
+}
+#loading {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font-size: 28px;
+  letter-spacing: 0.3em;
+}
