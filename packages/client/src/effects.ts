@@ -1,8 +1,8 @@
 import * as THREE from 'three';
-import { CAR_RIDE_HEIGHT, roadHeightAt, yawOf, type SimWorld, type Track } from '@benzina/shared';
+import { CAR_RIDE_HEIGHT, inTunnel, nearestSampleIndexNear, roadHeightAt, yawOf, type SimWorld, type Track } from '@benzina/shared';
 
 const MAX_MARKS = 1600;
-const MAX_SMOKE = 260;
+const MAX_SMOKE = 700;
 /** Rear wheel contact points in car space (x across, z along). */
 const REAR_WHEELS: [number, number][] = [
   [-0.88, -1.28],
@@ -95,6 +95,7 @@ export class Effects {
         this.trails.set(id, trail);
       }
       const p = car.body.translation();
+      trail.sampleHint = nearestSampleIndexNear(this.track, p.x, p.z, trail.sampleHint);
       const v = car.body.linvel();
       const yaw = yawOf(car.body.rotation());
       const fx = Math.sin(yaw);
@@ -105,6 +106,17 @@ export class Effects {
       // Sliding: sideways speed, a spin, or locked-up hard braking.
       const sliding = car.grounded && speed > 6 && (Math.abs(vL) > 4.5 || car.upset > 0.25 || Math.abs(car.body.angvel().y) > 2.4);
       const intensity = sliding ? Math.min(1, (Math.abs(vL) - 3) / 8 + car.upset) : 0;
+
+      // Rain: spray off the rear tyres at speed, a burst through puddles (none in the tunnel).
+      if (this.wet && car.grounded && speed > 10 && !inTunnel(this.track, trail.sampleHint)) {
+        const rate = Math.min(1, (speed - 10) / 35) * 0.25 + (car.puddle ? 1.2 : 0);
+        for (const [ox, oz] of REAR_WHEELS) {
+          if (Math.random() > rate * dt * 60 * 0.5) continue;
+          const x = p.x + fz * ox + fx * oz;
+          const z = p.z - fx * ox + fz * oz;
+          this.spray(new THREE.Vector3(x, p.y - CAR_RIDE_HEIGHT + 0.1, z), v, car.puddle);
+        }
+      }
 
       for (let w = 0; w < REAR_WHEELS.length; w++) {
         if (!sliding) {
@@ -147,6 +159,20 @@ export class Effects {
     this.markIndex = (this.markIndex + 1) % MAX_MARKS;
     this.marks.count = Math.max(this.marks.count, this.markIndex === 0 ? MAX_MARKS : this.markIndex);
     this.marks.instanceMatrix.needsUpdate = true;
+  }
+
+  /** Weather sets this: spray behind cars on a wet road. */
+  wet = false;
+
+  private spray(at: THREE.Vector3, v: { x: number; z: number }, big: boolean): void {
+    const i = this.smokeIndex;
+    this.smokeIndex = (i + 1) % MAX_SMOKE;
+    this.smokePos.set([at.x, at.y, at.z], i * 3);
+    const up = big ? 1.6 + Math.random() * 1.4 : 0.5 + Math.random() * 0.7;
+    const spread = big ? 2.5 : 0.8;
+    this.smokeVel.set([v.x * 0.35 + (Math.random() - 0.5) * spread, up, v.z * 0.35 + (Math.random() - 0.5) * spread], i * 3);
+    // Spray fades faster than smoke: start it part-way through its life.
+    this.smokeAge[i] = big ? 0.6 : 1.05;
   }
 
   private puff(at: THREE.Vector3, v: { x: number; z: number }): void {

@@ -109,6 +109,15 @@ export class CarRenderer {
   }
 
   /** Create views for new cars, remove views for departed ones, rebuild changed ones. */
+  private headlights = 0.6;
+
+  /** Headlight glow for every car (weather). */
+  setHeadlights(intensity: number): void {
+    if (intensity === this.headlights) return;
+    this.headlights = intensity;
+    for (const e of this.entries.values()) e.view.setHeadlights(intensity);
+  }
+
   sync(): void {
     for (const [id, e] of this.entries) {
       if (this.sim.cars.has(id) && e.look !== this.lookOf(id)) {
@@ -122,6 +131,7 @@ export class CarRenderer {
       const local = id === this.localId();
       const chosen = this.carOf(id);
       const view = new CarView(chosen?.color ?? carColor(id, local), STYLE_FOR_CLASS[car.carClass]);
+      view.setHeadlights(this.headlights);
       const tag = local ? null : nameTag(this.nameOf(id));
       if (tag) view.group.add(tag);
       this.scene.add(view.group);

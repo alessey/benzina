@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { nearestSampleIndex, type Track, type Vec3 } from '@benzina/shared';
+import { nearestSampleIndex, type Track, type Vec3, type Weather } from '@benzina/shared';
+import { buildPuddles, cameraInTunnel, LOOKS, paintSky, Rain, skyEnvironment, type WeatherLook } from './weatherFx';
 
 export interface GameScene {
   renderer: THREE.WebGLRenderer;
@@ -11,8 +12,11 @@ export interface GameScene {
   setTrack(track: Track): void;
   /** Ground height (terrain or road) at a point, for placing things. */
   heightAt(x: number, z: number): number;
-  /** Call each frame before rendering (keeps the sky centred on the camera). */
-  update(): void;
+  /** Call each frame before rendering (keeps the sky centred on the camera, moves the rain). */
+  update(dt?: number): void;
+  /** Sky, light, fog, wet road and rain for the race conditions. */
+  setWeather(weather: Weather): void;
+  readonly look: WeatherLook;
   /** Countdown gantry: how many red lights are lit (0–5), or all green. */
   setStartLights(red: number, green: boolean): void;
 }
@@ -45,6 +49,16 @@ export interface SceneOptions {
  * depth buffers. The terrain also sits 0.45 m under the road.
  */
 const ORDER = { sky: -20, terrain: -10, road: -9, curb: -8, start: -7 } as const;
+
+/** Like surfaceMaterial, but glossy (wet road, puddles). */
+function surfaceMaterialStd(layer: number, params: THREE.MeshStandardMaterialParameters): THREE.MeshStandardMaterial {
+  return new THREE.MeshStandardMaterial({
+    ...params,
+    polygonOffset: true,
+    polygonOffsetFactor: -2 * layer,
+    polygonOffsetUnits: -8 * layer,
+  });
+}
 
 function surfaceMaterial(layer: number, params: THREE.MeshLambertMaterialParameters): THREE.MeshLambertMaterial {
   return new THREE.MeshLambertMaterial({
@@ -80,7 +94,8 @@ export function createScene(opts: SceneOptions): GameScene {
   // Mobile browsers sometimes report the old size during the resize event after rotating.
   screen.orientation?.addEventListener('change', () => setTimeout(resize, 150));
 
-  scene.add(new THREE.HemisphereLight(0xe4f2ff, 0x5a7a3a, 1.3));
+  const hemi = new THREE.HemisphereLight(0xe4f2ff, 0x5a7a3a, 1.3);
+  scene.add(hemi);
   const sun = new THREE.DirectionalLight(0xfff1dc, 2.4);
   sun.castShadow = true;
   const shadowSize = opts.mobile ? 1024 : 2048;
@@ -102,14 +117,77 @@ export function createScene(opts: SceneOptions): GameScene {
   let terrain: Terrain | null = null;
   let lights: StartLights | null = null;
 
+  // Weather.
+  let weather: Weather = 'clear';
+  let look = LOOKS.clear;
+  let env: THREE.Texture | null = null;
+  const rain = new Rain(opts.mobile);
+  scene.add(rain.lines);
+  const wetRoad = surfaceMaterialStd(1, { color: 0x2c2e33, roughness: 0.28, metalness: 0.05, envMapIntensity: 1.1 });
+  const puddleMat = surfaceMaterialStd(3, { color: 0x46525d, roughness: 0.03, metalness: 0.6, envMapIntensity: 1.15, side: THREE.DoubleSide });
+  let dryRoad: THREE.Material | null = null;
+
+  /** Apply the weather to the current track's meshes (road surface, puddles, mountains). */
+  const dressTrack = () => {
+    if (!trackGroup) return;
+    const road = trackGroup.getObjectByName('road') as THREE.Mesh | undefined;
+    if (road) {
+      dryRoad ??= road.material as THREE.Material;
+      if (road.material !== wetRoad && road.material !== dryRoad) dryRoad = road.material as THREE.Material;
+      road.material = look.wet ? wetRoad : dryRoad;
+    }
+    const puddles = trackGroup.getObjectByName('puddles');
+    if (puddles) puddles.visible = look.wet;
+    const mountains = trackGroup.getObjectByName('mountains') as THREE.Mesh | undefined;
+    if (mountains) {
+      mountains.visible = look.mountains !== null;
+      if (look.mountains !== null) (mountains.material as THREE.MeshBasicMaterial).color.setHex(look.mountains);
+    }
+  };
+
   return {
     renderer,
     scene,
     camera,
     sun,
+    get look() {
+      return look;
+    },
+    setWeather(w: Weather) {
+      if (w === weather && env) return;
+      weather = w;
+      look = LOOKS[w];
+      (scene.background as THREE.Color).setHex(look.horizon);
+      const fog = scene.fog as THREE.Fog;
+      fog.color.setHex(look.horizon);
+      fog.near = look.fogNear;
+      fog.far = look.fogFar;
+      hemi.color.setHex(look.hemiSky);
+      hemi.groundColor.setHex(look.hemiGround);
+      hemi.intensity = look.hemiIntensity;
+      sun.color.setHex(look.sunColor);
+      sun.intensity = look.sunIntensity;
+      renderer.toneMappingExposure = look.exposure;
+      paintSky(sky.geometry, look);
+      env?.dispose();
+      env = skyEnvironment(renderer, look);
+      wetRoad.envMap = env;
+      puddleMat.envMap = env;
+      wetRoad.needsUpdate = true;
+      puddleMat.needsUpdate = true;
+      dressTrack();
+    },
     setTrack(track: Track) {
       if (terrain?.track === track) return;
       if (trackGroup) {
+        // Shared weather materials outlive the track: detach them before disposing.
+        const road = trackGroup.getObjectByName('road') as THREE.Mesh | undefined;
+        if (road && dryRoad) road.material = dryRoad;
+        const oldPuddles = trackGroup.getObjectByName('puddles') as THREE.Mesh | undefined;
+        if (oldPuddles) {
+          oldPuddles.removeFromParent();
+          oldPuddles.geometry.dispose();
+        }
         scene.remove(trackGroup);
         disposeTree(trackGroup);
       }
@@ -118,7 +196,16 @@ export function createScene(opts: SceneOptions): GameScene {
       lights = new StartLights(track);
       trackGroup.add(lights.group);
       trackGroup.add(buildGrandstand(track, terrain));
+      const puddles = buildPuddles(track, puddleMat);
+      if (puddles) {
+        puddles.name = 'puddles';
+        puddles.renderOrder = ORDER.start + 0.5;
+        puddles.receiveShadow = true;
+        trackGroup.add(puddles);
+      }
+      dryRoad = null;
       scene.add(trackGroup);
+      dressTrack();
     },
     setStartLights(red, green) {
       lights?.set(red, green);
@@ -126,8 +213,9 @@ export function createScene(opts: SceneOptions): GameScene {
     heightAt(x, z) {
       return terrain ? terrain.heightAt(x, z) : 0;
     },
-    update() {
+    update(dt = 1 / 60) {
       sky.position.copy(camera.position);
+      rain.update(weather === 'rain' && !cameraInTunnel(terrain?.track ?? null, camera), camera, dt);
     },
   };
 }
@@ -312,7 +400,9 @@ function buildTrackScenery(track: Track, terrain: Terrain): THREE.Group {
   for (const water of buildWater(track)) group.add(water);
   const tunnel = buildTunnel(track);
   if (tunnel) group.add(tunnel);
-  group.add(buildMountains(track));
+  const mountains = buildMountains(track);
+  mountains.name = 'mountains';
+  group.add(mountains);
   return group;
 }
 
@@ -362,6 +452,7 @@ function stripGeometry(a: Vec3[], b: Vec3[], lift: number, colorOf?: (i: number)
 
 function buildRoad(track: Track): THREE.Mesh {
   const mesh = new THREE.Mesh(stripGeometry(track.leftEdge, track.rightEdge, 0.02), surfaceMaterial(1, { color: 0x3d3f44 }));
+  mesh.name = 'road';
   mesh.receiveShadow = true;
   mesh.renderOrder = ORDER.road;
   return mesh;

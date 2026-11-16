@@ -949,3 +949,12 @@ body.touch #race-panel:has(.lobby) {
     max-height: calc(100vh - var(--safe-top) - 166px - var(--safe-bottom) - 12px);
   }
 }
+
+.lobby .setting.weather .stepper {
+  flex: 0 1 190px;
+}
+.lobby .weather-note {
+  font-size: 12px;
+  margin-top: 4px;
+  text-align: right;
+}

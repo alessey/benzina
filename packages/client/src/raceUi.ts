@@ -1,4 +1,4 @@
-import { CLASS_SPECS, TRACKS, type BotSettings, type CarChoice, type PlayerInfo, type RaceState, type Track } from '@benzina/shared';
+import { CLASS_SPECS, TRACKS, WEATHER_NAMES, WEATHERS, type BotSettings, type CarChoice, type PlayerInfo, type RaceState, type Track, type Weather } from '@benzina/shared';
 import { carPickerHtml, handlePickerClick, hex } from './carPicker';
 import { formatTime } from './lapTimer';
 
@@ -20,7 +20,17 @@ export interface RaceView {
   /** Our car choice (null when spectating). */
   myCar: CarChoice | null;
   botSettings: BotSettings;
+  weather: Weather;
 }
+
+/** What each weather means for the race, under its name in the lobby. */
+const WEATHER_NOTES: Record<Weather, string> = {
+  clear: 'Dry, full grip',
+  overcast: 'Dry, flat light',
+  rain: 'Wet: less grip, longer braking, puddles',
+  fog: 'Dry, but corners appear late',
+  dusk: 'Dry, low sun and long shadows',
+};
 
 const TICK_SECONDS = 1 / 60;
 
@@ -39,6 +49,8 @@ export class RaceUi {
   private lastPanelKey = '';
 
   private trackId = '';
+  private weather: Weather = 'clear';
+  private weatherAskedAt = 0;
   private myCar: CarChoice | null = null;
   private bots: BotSettings = { difficulty: 'normal', catchUp: false };
   /** Is the "change car" picker open on the results card? */
@@ -55,6 +67,7 @@ export class RaceUi {
       selectTrack(id: string): void;
       setCar(car: CarChoice): void;
       setBots(settings: BotSettings): void;
+      setWeather(weather: Weather): void;
     },
   ) {
     this.panel.addEventListener('click', (e) => {
@@ -85,6 +98,13 @@ export class RaceUi {
         const next = TRACKS[(i + (act === 'track+' ? 1 : -1) + TRACKS.length) % TRACKS.length];
         this.actions.selectTrack(next.id);
       }
+      if (act === 'weather-' || act === 'weather+') {
+        const i = WEATHERS.indexOf(this.weather);
+        // Step from what we last asked for, so quick clicks online don't repeat a step.
+        this.weather = WEATHERS[(i + (act === 'weather+' ? 1 : -1) + WEATHERS.length) % WEATHERS.length];
+        this.weatherAskedAt = performance.now();
+        this.actions.setWeather(this.weather);
+      }
       if (act?.startsWith('laps')) this.lastPanelKey = '';
     });
   }
@@ -103,6 +123,8 @@ export class RaceUi {
   update(v: RaceView): void {
     const { race } = v;
     this.trackId = v.trackId;
+    // Our own pick wins for a moment while the server confirms it.
+    if (performance.now() - this.weatherAskedAt > 1500) this.weather = v.weather;
     this.myCar = v.myCar;
     this.bots = v.botSettings;
     const me = race.standings.find((s) => s.id === v.localId);
@@ -157,6 +179,7 @@ export class RaceUi {
     const panelKey = JSON.stringify([
       race.phase,
       v.trackId,
+      v.weather,
       v.myCar,
       v.botSettings,
       this.picking,
@@ -188,7 +211,7 @@ export class RaceUi {
     // Collapsed: a slim bar so you can warm up without the card in the way.
     if (this.collapsed && !isResults) {
       return `<div class="card lobby-bar">
-        <span>${roomTitle} · ${v.players.size} driver${v.players.size === 1 ? '' : 's'} · ${trackName}</span>
+        <span>${roomTitle} · ${v.players.size} driver${v.players.size === 1 ? '' : 's'} · ${trackName} · ${WEATHER_NAMES[v.weather]}</span>
         ${v.isHost ? `<button class="primary" data-act="start">Start race</button>` : ''}
         <button data-act="expand">Show</button>
       </div>`;
@@ -237,6 +260,13 @@ export class RaceUi {
     const raceSection = `<section><h3>Race</h3>
         <div class="track-row"><canvas class="track-preview" width="150" height="104"></canvas>
           <div class="track-side">${trackControl}<div class="muted track-facts">${trackFacts(v.track)}</div></div></div>
+        <div class="setting weather"><span class="label-sm">Weather</span>
+          ${
+            v.isHost
+              ? `<div class="stepper track"><button data-act="weather-" aria-label="Previous weather">◀</button><span>${WEATHER_NAMES[v.weather]}</span><button data-act="weather+" aria-label="Next weather">▶</button></div>`
+              : `<b>${WEATHER_NAMES[v.weather]}</b>`
+          }</div>
+        <div class="muted weather-note">${WEATHER_NOTES[v.weather]}</div>
         ${settings}
       </section>`;
 

@@ -36,7 +36,8 @@ URL options:
 |---|---|
 | `?room=CODE` | invite link: pre-fills the code on the start screen |
 | `?offline&bots=N` | skip the menu: offline practice/race against N bots |
-| `?track=ID` | track for offline play and the menu backdrop (`circuito`, `colline`, `serpente`) |
+| `?track=ID` | track for offline play and the menu backdrop (`circuito`, `colline`, `serpente`, `salto`, `porto`) |
+| `?weather=W` | weather for offline play (`clear`, `overcast`, `rain`, `fog`, `dusk`) |
 | `?autojoin` (+`room`, `name`, `bots`) | skip the menu and join (used by automated tests) |
 | `?bot` | autopilot drives your car |
 | `?debug` | show the netcode overlay (toggle with <code>`</code> or F3), and the tuning panel on phones |
@@ -70,6 +71,7 @@ packages/
     predictor.ts client prediction + reconciliation (no rendering, no sockets)
     race.ts     race rules: countdown, checkpoints, laps, standings, results (server + offline)
     bot.ts      autopilot, used by tests, server bots and headless bot clients
+    weather.ts  race weather: wet grip in rain, puddles (fixed per track), dry tunnel
   server/   Node game server
     index.ts       HTTP + WebSocket entry point (/ws, /health)
     lobby.ts       public/private rooms, quick play, join by code, single fixed-rate tick loop
@@ -84,6 +86,7 @@ packages/
     carRenderer.ts  draws all cars, interpolates ticks, smooths corrections
     debugOverlay.ts netcode stats + server "ghost" boxes
     scene.ts        sky, terrain, road/curbs/walls, trees, mountains, start gantry, grandstand
+    weatherFx.ts    weather looks (sky, fog, light), wet road reflections, puddles, rain
     carView.ts      procedural cars lofted through cross-sections (60s GT, 80s wedge, muscle, rally hatch)
     effects.ts      skid marks and tyre smoke
     audio.ts        synthesised engines, tyre screech, wind, crashes, beeps (Web Audio)

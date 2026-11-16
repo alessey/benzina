@@ -12,3 +12,4 @@ export * from './race';
 export * from './tracks';
 export * from './names';
 export * from './cars';
+export * from './weather';

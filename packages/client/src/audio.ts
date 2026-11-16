@@ -132,6 +132,9 @@ export class AudioEngine {
   private master: GainNode | null = null;
   private noise: AudioBuffer | null = null;
   private wind: GainNode | null = null;
+  private rain: GainNode | null = null;
+  private rainLevel = 0;
+  private nextThunder = 0;
   private localVoice: EngineVoice | null = null;
   private readonly remoteVoices = new Map<string, EngineVoice>();
   private muted: boolean;
@@ -180,7 +183,34 @@ export class AudioEngine {
     this.wind = new GainNode(ctx, { gain: 0 });
     windSrc.connect(new BiquadFilterNode(ctx, { type: 'lowpass', frequency: 420 })).connect(this.wind).connect(this.master);
     windSrc.start();
+    // Rain: high band of noise, plus a duller layer for drops on the car.
+    const rainSrc = new AudioBufferSourceNode(ctx, { buffer: this.noise, loop: true, playbackRate: 0.93 });
+    this.rain = new GainNode(ctx, { gain: 0 });
+    rainSrc
+      .connect(new BiquadFilterNode(ctx, { type: 'bandpass', frequency: 2600, Q: 0.5 }))
+      .connect(this.rain)
+      .connect(this.master);
+    rainSrc.start();
     this.localVoice = new EngineVoice(ctx, this.master, this.noise, false);
+  }
+
+  /** Rain ambience, 0..1 (with distant thunder now and then). */
+  setRain(level: number): void {
+    this.rainLevel = level;
+  }
+
+  private thunder(): void {
+    const ctx = this.ctx;
+    if (!ctx || !this.master || !this.noise) return;
+    const t = ctx.currentTime;
+    const src = new AudioBufferSourceNode(ctx, { buffer: this.noise, playbackRate: 0.35 });
+    const gain = new GainNode(ctx, { gain: 0 });
+    gain.gain.setValueAtTime(0, t);
+    gain.gain.linearRampToValueAtTime(0.32, t + 0.25);
+    gain.gain.exponentialRampToValueAtTime(0.001, t + 3.2);
+    src.connect(new BiquadFilterNode(ctx, { type: 'lowpass', frequency: 140 })).connect(gain).connect(this.master);
+    src.start(t);
+    src.stop(t + 3.3);
   }
 
   /** Call every frame with the cars worth hearing. */
@@ -202,6 +232,18 @@ export class AudioEngine {
     if (local) this.localVoice!.update(local, 1);
     else this.localVoice!.stop();
     this.wind!.gain.setTargetAtTime(Math.min(0.12, ((local?.speed ?? 0) / 45) ** 2 * 0.12), t, 0.2);
+    // Rain louder with speed (tyre hiss on the wet road).
+    const rainGain = this.rainLevel * (0.05 + Math.min(0.05, (Math.abs(local?.speed ?? 0) / 45) * 0.05));
+    this.rain!.gain.setTargetAtTime(rainGain, t, 0.5);
+    if (this.rainLevel > 0) {
+      if (this.nextThunder === 0) this.nextThunder = t + 8 + Math.random() * 15;
+      if (t > this.nextThunder) {
+        this.thunder();
+        this.nextThunder = t + 20 + Math.random() * 25;
+      }
+    } else {
+      this.nextThunder = 0;
+    }
 
     // The nearest few other cars get an engine each (CPU on phones).
     const remotes = cars

@@ -1,4 +1,4 @@
-import { buildTrack, DEFAULT_TRACK, DT, TRACKS, type Track } from '@benzina/shared';
+import { buildTrack, DEFAULT_TRACK, DT, TRACKS, WEATHERS, type Track, type Weather } from '@benzina/shared';
 import { Room, type RoomOptions } from './room';
 
 const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -40,8 +40,20 @@ export class Lobby {
     return (
       open.find((r) => r.race.phase === 'lobby') ??
       open[0] ??
-      this.create(this.freshCode(), { ...options, isPublic: true }, TRACKS[this.nextQuickTrack++ % TRACKS.length].id)
+      this.quickRoom(options)
     );
+  }
+
+  /**
+   * A new quick-play room: tracks rotate, and the weather rotates too, shifting by one each
+   * time round the tracks so every track meets every weather.
+   */
+  private quickRoom(options: RoomOptions): Room {
+    const k = this.nextQuickTrack++;
+    const room = this.create(this.freshCode(), { ...options, isPublic: true }, TRACKS[k % TRACKS.length].id);
+    const weather: Weather = WEATHERS[(k + Math.floor(k / TRACKS.length)) % WEATHERS.length];
+    room.setWeather(weather);
+    return room;
   }
 
   private create(code: string, options: RoomOptions, trackId?: string): Room {

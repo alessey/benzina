@@ -1,6 +1,7 @@
 import { RAPIER } from './physics';
 import { CAR_RIDE_HEIGHT, CAR_SHAPE, HOVER_CLEARANCE, SUSPENSION_TRAVEL, type CarTuning } from './config';
 import { CLASS_SPECS, classTuning, type CarClass } from './cars';
+import { PUDDLE, surfaceTuning, type Weather } from './weather';
 import type { CarInput } from './input';
 import { type CarState, yawOf, yawQuat } from './state';
 import { nearestSampleIndex, nearestSampleIndexNear, rightOf, roadHeightAt, type Track } from './track';
@@ -59,6 +60,8 @@ export class Car {
   wallSide: -1 | 0 | 1 = 0;
   /** Search hint for the nearest centre-line sample. Only speeds up the search. */
   private sampleHint = 0;
+  /** Driving through standing water this tick (for spray and sound). */
+  puddle = false;
   /**
    * Extra yaw rate this tick from glancing off other cars (set by SimWorld before controls).
    * Derived from positions each tick, so it isn't part of the networked state.
@@ -119,8 +122,8 @@ export class Car {
     return CLASS_SPECS[this.carClass].mass;
   }
 
-  applyControls(input: CarInput, base: CarTuning, dt: number): void {
-    const t = classTuning(base, this.carClass);
+  applyControls(input: CarInput, base: CarTuning, dt: number, weather: Weather = 'clear'): void {
+    let t = classTuning(base, this.carClass);
     const pos = this.body.translation();
     if (input.reset || pos.y < FALL_RESET_Y || this.belowRoad(pos.x, pos.y, pos.z)) {
       this.resetToTrack();
@@ -178,7 +181,12 @@ export class Car {
       if (this.grounded) vy = Math.min(vy, roadVy + MAX_HOP_SPEED);
     }
 
+    this.puddle = false;
     if (this.grounded) {
+      // Rain: wet grip, and standing water where the track has puddles.
+      const surface = surfaceTuning(t, weather, this.track, this.sampleHint, pos.x, pos.z);
+      t = surface.tuning;
+      this.puddle = surface.puddle;
       const throttle = clamp(input.throttle, -1, 1);
       if (throttle > 0) {
         if (vF < -0.5) {
@@ -198,6 +206,7 @@ export class Car {
       }
 
       if (input.handbrake) vF = approach(vF, 0, t.handbrakeDecel * dt);
+      if (this.puddle) vF = approach(vF, 0, PUDDLE.drag * dt);
 
       // Scraping a wall bleeds speed.
       const wall = this.wallContact(pos.x, pos.z, fx, fz);

@@ -23,6 +23,8 @@ import {
   type ServerMessage,
   type Snapshot,
   type Track,
+  type Weather,
+  weatherTuning,
 } from '@benzina/shared';
 import type { Connection } from './net/connection';
 
@@ -62,6 +64,9 @@ export interface Session {
   /** How bots drive (host sets it). */
   readonly botSettings: BotSettings;
   setBotSettings(settings: BotSettings): void;
+  /** Race conditions (host sets it, between races). */
+  readonly weather: Weather;
+  setWeather(weather: Weather): void;
   /** Our car; changes apply between races. */
   readonly myCar: CarChoice;
   setCar(car: CarChoice): void;
@@ -85,7 +90,7 @@ export class OfflineSession implements Session {
   private readonly botIds: string[] = [];
   botSettings: BotSettings = { ...DEFAULT_BOT_SETTINGS };
 
-  constructor(track: Track, bots: number, car: CarChoice, tuning?: CarTuning) {
+  constructor(track: Track, bots: number, car: CarChoice, tuning?: CarTuning, weather: Weather = 'clear') {
     this.track = track;
     this.players.set(this.localId, { id: 1, name: 'You', bot: false, car });
     for (let i = 0; i < Math.min(7, bots); i++) {
@@ -103,7 +108,7 @@ export class OfflineSession implements Session {
         },
       });
     }
-    [this.sim, this.raceLogic] = this.buildWorld(track, tuning);
+    [this.sim, this.raceLogic] = this.buildWorld(track, tuning, weather);
   }
 
   get myCar(): CarChoice {
@@ -122,8 +127,19 @@ export class OfflineSession implements Session {
     this.onChange();
   }
 
-  private buildWorld(track: Track, tuning?: CarTuning): [SimWorld, Race] {
+  get weather(): Weather {
+    return this.sim.weather;
+  }
+
+  setWeather(weather: Weather): void {
+    if (this.raceLogic.phase !== 'lobby' && this.raceLogic.phase !== 'results') return;
+    this.sim.weather = weather;
+    this.onChange();
+  }
+
+  private buildWorld(track: Track, tuning?: CarTuning, weather: Weather = 'clear'): [SimWorld, Race] {
     const sim = new SimWorld(track, tuning);
+    sim.weather = weather;
     for (const [id, p] of this.players) sim.addCar(id, id === this.localId ? 0 : this.botIds.indexOf(id) + 1, p.car.cls);
     return [sim, new Race(track)];
   }
@@ -134,7 +150,7 @@ export class OfflineSession implements Session {
     if (track === this.track) return;
     const old = this.sim;
     this.track = track;
-    [this.sim, this.raceLogic] = this.buildWorld(track, { ...old.tuning });
+    [this.sim, this.raceLogic] = this.buildWorld(track, { ...old.tuning }, old.weather);
     old.free();
     this.onTrackChange();
     this.onChange();
@@ -165,7 +181,7 @@ export class OfflineSession implements Session {
       const car = this.sim.cars.get(id)!;
       const mine = this.raceLogic.progressOf(id);
       const driving = this.botSettings.catchUp && me !== null && mine !== null ? catchUpProfile(profile, mine - me) : profile;
-      inputs.set(id, frozen ? NEUTRAL_INPUT : botInput(car, this.track, driving, this.sim.tuning, this.sim.tick * DT));
+      inputs.set(id, frozen ? NEUTRAL_INPUT : botInput(car, this.track, driving, weatherTuning(this.sim.tuning, this.sim.weather), this.sim.tick * DT));
     }
     this.sim.step(inputs);
     if (this.raceLogic.update(this.sim, this.sim.tick)) this.onChange();
@@ -205,6 +221,7 @@ export class OnlineSession implements Session {
   ) {
     this.track = getTrack(welcome.trackId);
     this.sim = new SimWorld(this.track, { ...welcome.tuning });
+    this.sim.weather = welcome.weather ?? 'clear';
     this.predictor = new Predictor(this.sim, String(welcome.id));
     this.myId = welcome.id;
     this.room = welcome.room;
@@ -226,6 +243,10 @@ export class OnlineSession implements Session {
           this.botSettings = msg.bots;
           this.onChange();
           break;
+        case 'weather':
+          this.sim.weather = msg.weather;
+          this.onChange();
+          break;
         case 'left':
           this.players.delete(String(msg.id));
           this.onChange();
@@ -239,6 +260,7 @@ export class OnlineSession implements Session {
           const old = this.sim;
           this.track = getTrack(msg.trackId);
           this.sim = new SimWorld(this.track, { ...old.tuning });
+          this.sim.weather = old.weather;
           this.predictor.replaceWorld(this.sim);
           old.free();
           this.onTrackChange();
@@ -335,6 +357,14 @@ export class OnlineSession implements Session {
 
   setBotSettings(settings: BotSettings): void {
     this.conn.sendMessage({ type: 'bots', bots: settings });
+  }
+
+  get weather(): Weather {
+    return this.sim.weather;
+  }
+
+  setWeather(weather: Weather): void {
+    this.conn.sendMessage({ type: 'weather', weather });
   }
 
   sendTuning(tuning: CarTuning): void {

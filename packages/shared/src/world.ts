@@ -4,6 +4,7 @@ import type { CarClass } from './cars';
 import { DEFAULT_TUNING, DT, type CarTuning } from './config';
 import { NEUTRAL_INPUT, type CarInput } from './input';
 import { gridSlot, type Track, type Vec3 } from './track';
+import type { Weather } from './weather';
 
 const GROUND_HALF_SIZE = 2000;
 
@@ -16,6 +17,8 @@ export class SimWorld {
   readonly world: RAPIER.World;
   readonly cars = new Map<string, Car>();
   tick = 0;
+  /** Race conditions (rain changes grip). Copy it over when rebuilding the world. */
+  weather: Weather = 'clear';
 
   constructor(
     readonly track: Track,
@@ -80,7 +83,7 @@ export class SimWorld {
     this.world.gravity = { x: 0, y: -this.tuning.gravity, z: 0 };
     this.resolveBumps();
     for (const [id, car] of this.cars) {
-      car.applyControls(inputs.get(id) ?? NEUTRAL_INPUT, this.tuning, DT);
+      car.applyControls(inputs.get(id) ?? NEUTRAL_INPUT, this.tuning, DT, this.weather);
     }
     this.world.step();
     this.tick++;

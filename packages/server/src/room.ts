@@ -3,6 +3,9 @@ import {
   CAR_CLASSES,
   catchUpProfile,
   freeColor,
+  parseWeather,
+  weatherTuning,
+  type Weather,
   DEFAULT_BOT_SETTINGS,
   DT,
   Race,
@@ -168,6 +171,7 @@ export class Room {
       tick: this.sim.tick,
       trackId: this.sim.track.def.id,
       bots: this.botSettings,
+      weather: this.sim.weather,
     });
     this.broadcast({ type: 'joined', player: info }, id);
     return id;
@@ -224,6 +228,8 @@ export class Room {
       this.startRace(Number(msg.laps) || 3);
     } else if (msg.type === 'track' && id === this.hostId) {
       this.changeTrack(String(msg.trackId));
+    } else if (msg.type === 'weather' && id === this.hostId) {
+      this.setWeather(parseWeather(msg.weather));
     } else if (msg.type === 'car') {
       this.changeCar(player, parseCarChoice(msg.car));
     } else if (msg.type === 'bots' && id === this.hostId) {
@@ -234,6 +240,14 @@ export class Room {
       };
       this.broadcast({ type: 'bots', bots: this.botSettings });
     }
+  }
+
+  /** Between races only: the weather is fixed for a race. */
+  setWeather(weather: Weather): void {
+    if (this.race.phase !== 'lobby' && this.race.phase !== 'results') return;
+    if (weather === this.sim.weather) return;
+    this.sim.weather = weather;
+    this.broadcast({ type: 'weather', weather });
   }
 
   /** Between races only: a car change mid-race would be a free pit stop. */
@@ -266,6 +280,7 @@ export class Room {
     if (!track || track === this.sim.track) return;
     const old = this.sim;
     this.sim = new SimWorld(track, { ...old.tuning }, old.tick);
+    this.sim.weather = old.weather;
     old.free();
     this.race = new Race(track);
     for (const p of this.players.values()) {
@@ -312,7 +327,7 @@ export class Room {
       const mine = this.race.progressOf(id);
       const driving =
         this.botSettings.catchUp && leader !== null && mine !== null ? catchUpProfile(profile, mine - leader) : profile;
-      b.lastInput = frozen ? NEUTRAL_INPUT : botInput(car, this.sim.track, driving, this.sim.tuning, this.sim.tick * DT);
+      b.lastInput = frozen ? NEUTRAL_INPUT : botInput(car, this.sim.track, driving, weatherTuning(this.sim.tuning, this.sim.weather), this.sim.tick * DT);
       inputs.set(id, b.lastInput);
     }
 

@@ -690,6 +690,7 @@ export class CarView {
   private readonly wheels: THREE.Object3D[] = [];
   private readonly frontPivots: THREE.Group[] = [];
   private readonly brakeMat: THREE.MeshStandardMaterial;
+  private readonly headMat: THREE.MeshStandardMaterial;
   private readonly fadeMats: THREE.Material[] = [];
   private readonly wheelR: number;
   private wheelSpin = 0;
@@ -712,6 +713,7 @@ export class CarView {
       amber: new THREE.MeshStandardMaterial({ color: 0xffa21f, emissive: 0xff8a00, emissiveIntensity: 0.3 }),
     };
     this.brakeMat = mats.brake;
+    this.headMat = mats.head;
     // Per car, so fading one car never affects another.
     this.fadeMats.push(...Object.values(mats));
 
@@ -766,6 +768,11 @@ export class CarView {
     this.body.rotation.z = THREE.MathUtils.lerp(this.body.rotation.z, roll, 1 - Math.exp(-8 * dt));
     this.brake += (braking - this.brake) * (1 - Math.exp(-15 * dt));
     this.brakeMat.emissiveIntensity = 0.25 + this.brake * 2.5;
+  }
+
+  /** Headlight glow (brighter in rain, fog and at dusk). */
+  setHeadlights(intensity: number): void {
+    this.headMat.emissiveIntensity = intensity;
   }
 
   /** Fade the car out (e.g. when it's between the camera and your car). 1 = solid. */

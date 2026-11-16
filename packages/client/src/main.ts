@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { botInput, COUNTDOWN_TICKS, DEFAULT_TRACK, DT, initPhysics, nearestSampleIndex, type CarInput } from '@benzina/shared';
+import { botInput, COUNTDOWN_TICKS, DEFAULT_TRACK, DT, initPhysics, nearestSampleIndex, parseWeather, weatherTuning, type CarInput } from '@benzina/shared';
 import { createScene } from './scene';
 import { CarRenderer } from './carRenderer';
 import { CarView } from './carView';
@@ -124,7 +124,7 @@ async function openSession(): Promise<Session> {
   for (;;) {
     const choice = (!error && choiceFromUrl()) || (await showStartScreen({ inviteCode: params.get('room'), error }));
     if (choice.mode === 'offline') {
-      return new OfflineSession(getTrack(params.get('track') ?? DEFAULT_TRACK.id), choice.bots, choice.car);
+      return new OfflineSession(getTrack(params.get('track') ?? DEFAULT_TRACK.id), choice.bots, choice.car, undefined, parseWeather(params.get('weather')));
     }
     setStatus('Connecting…');
     try {
@@ -228,6 +228,7 @@ const raceUi = new RaceUi({
     session.setCar(car);
   },
   setBots: (settings) => session.setBotSettings(settings),
+  setWeather: (weather) => session.setWeather(weather),
 });
 
 let lastPhase = session.race.phase;
@@ -273,7 +274,7 @@ let lastThrottle = 0;
 function controls(): CarInput {
   const human = input.sample();
   const car = session.localId ? session.sim.cars.get(session.localId) : undefined;
-  const c = AUTOPILOT && car ? { ...botInput(car, session.track), reset: human.reset } : human;
+  const c = AUTOPILOT && car ? { ...botInput(car, session.track, 1, weatherTuning(session.sim.tuning, session.sim.weather)), reset: human.reset } : human;
   lastThrottle = Math.abs(c.throttle);
   return c;
 }
@@ -453,7 +454,8 @@ function frame(now: number): void {
     chase.orbit(raceUi.cardOpen, orbit.yaw, orbit.tilt, frameTime);
     chase.frame(raceUi.cardOpen ? freeSpaceShift() : 0, frameTime);
     chase.update(pose.pos, pose.rot, pose.speed / session.sim.tuning.maxSpeed, frameTime);
-    sun.position.set(pose.pos.x + 30, 60, pose.pos.z + 20);
+    const [sx, sy, sz] = world.look.sunOffset;
+    sun.position.set(pose.pos.x + sx, pose.pos.y + sy, pose.pos.z + sz);
     sun.target.position.copy(pose.pos);
     hud.speed.textContent = String(Math.round(Math.abs(pose.speed) * 3.6));
   }
@@ -490,6 +492,7 @@ function frame(now: number): void {
     track: session.track,
     myCar: session.localId || session.race.phase === 'lobby' ? (session.players.get(session.localId ?? '')?.car ?? null) : null,
     botSettings: session.botSettings,
+    weather: session.weather,
   });
 
   // Phones: the lobby/results card would cover the map, so show it only while racing there.
@@ -509,7 +512,12 @@ function frame(now: number): void {
     fps,
   });
 
-  world.update();
+  // Weather: the race setting drives the scene, headlights and spray.
+  world.setWeather(session.weather);
+  cars.setHeadlights(world.look.headlights);
+  effects.wet = world.look.wet;
+  audio.setRain(session.weather === 'rain' ? 1 : 0);
+  world.update(frameTime);
   renderer.render(scene, camera);
   requestAnimationFrame(frame);
 }

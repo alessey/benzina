@@ -3,6 +3,7 @@
  * rare control messages (welcome, joins, ping, tuning) are JSON text frames.
  */
 import type { CarTuning } from './config';
+import type { Weather } from './weather';
 import type { RaceState } from './race';
 import { CAR_CLASSES, type CarChoice, type CarClass } from './cars';
 import type { BotSettings } from './bot';
@@ -208,7 +209,10 @@ export type ServerMessage =
       tick: number;
       trackId: string;
       bots: BotSettings;
+      weather: Weather;
     }
+  /** The host changed the weather (between races). */
+  | { type: 'weather'; weather: Weather }
   /** A player changed something about themselves (their car). */
   | { type: 'player'; player: PlayerInfo }
   /** The host changed how bots drive. */
@@ -232,4 +236,6 @@ export type ClientMessage =
   /** Between races: pick a different car. */
   | { type: 'car'; car: CarChoice }
   /** Host only: bot difficulty and catch-up. */
-  | { type: 'bots'; bots: BotSettings };
+  | { type: 'bots'; bots: BotSettings }
+  /** Host only, between races: change the weather. */
+  | { type: 'weather'; weather: Weather };
