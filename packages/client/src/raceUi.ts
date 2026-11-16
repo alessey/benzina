@@ -170,7 +170,7 @@ export class RaceUi {
     // Banner: spectating / wrong way / finish.
     let banner = '';
     if (v.spectating && race.phase !== 'lobby') banner = "Spectating: you'll join the next race";
-    else if (me?.finishTime != null && race.phase === 'racing') banner = `Finished P${me.position}!`;
+    else if (me?.finishTime != null && race.phase === 'racing') banner = finishMessage(me.position);
     else if (v.wrongWay && race.phase === 'racing') banner = '<span class="warn">WRONG WAY</span>';
     this.set(this.banner, banner);
 
@@ -302,6 +302,15 @@ export class RaceUi {
       </div>
     </div>`;
   }
+}
+
+/** "You won!", "You came in 2nd", ... */
+function finishMessage(position: number): string {
+  if (position === 1) return 'You won!';
+  const rem100 = position % 100;
+  const rem10 = position % 10;
+  const suffix = rem100 >= 11 && rem100 <= 13 ? 'th' : rem10 === 1 ? 'st' : rem10 === 2 ? 'nd' : rem10 === 3 ? 'rd' : 'th';
+  return `You came in ${position}${suffix}`;
 }
 
 function escapeHtml(s: string): string {
