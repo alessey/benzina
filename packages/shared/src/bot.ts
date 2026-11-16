@@ -3,7 +3,7 @@ import { classTuning } from './cars';
 import { DEFAULT_TUNING, type CarTuning } from './config';
 import type { CarInput } from './input';
 import { yawOf } from './state';
-import { nearestSampleIndex, type Track } from './track';
+import { nearestSampleIndex, pipeOffsetForSlope, rightOf, type Track } from './track';
 
 export type BotDifficulty = 'easy' | 'normal' | 'hard';
 
@@ -73,9 +73,20 @@ export function botInput(
   const spacing = track.length / n;
   const lookAhead = Math.round((8 + Math.abs(speed) * 0.6) / spacing);
   const target = track.samples[(nearestSampleIndex(track, p.x, p.z) + lookAhead) % n];
+  // In a bobsled channel, aim for where the car naturally rides in a corner: up the outside
+  // wall, where its slope balances the cornering force (slope = v²·curvature / g).
+  let aimX = target.x;
+  let aimZ = target.z;
+  if (track.def.pipe) {
+    const m = (speed * speed * Math.abs(target.curvature)) / baseTuning.gravity;
+    const lat = -Math.sign(target.curvature) * pipeOffsetForSlope(track.def, m, 0.65);
+    const r = rightOf(target.tx, target.tz);
+    aimX += r.x * lat;
+    aimZ += r.z * lat;
+  }
 
-  const dx = target.x - p.x;
-  const dz = target.z - p.z;
+  const dx = aimX - p.x;
+  const dz = aimZ - p.z;
   // Angle to target in the car's frame: positive means the target is to the right.
   const angle = Math.atan2(dx * -fz + dz * fx, dx * fx + dz * fz);
   const phase = (Number(car.id) || 0) * 1.7;
@@ -89,7 +100,9 @@ export function botInput(
   const horizon = Math.round((20 + Math.abs(speed) * 1.6) / spacing);
   let tightest = 0;
   for (let k = 2; k <= horizon; k++) tightest = Math.max(tightest, Math.abs(track.samples[(here + k) % n].curvature));
-  const cornerSpeed = tightest > 0 ? Math.sqrt((t.cornerGrip * profile.corner) / tightest) : Infinity;
+  // Channel walls bank the corners: they add up to gravity × sin(wall angle) of grip.
+  const bank = track.def.pipe ? t.gravity * Math.sin(track.def.pipe.angle) * 0.85 : 0;
+  const cornerSpeed = tightest > 0 ? Math.sqrt(((t.cornerGrip + bank) * profile.corner) / tightest) : Infinity;
   // Proportional: brake harder the more we're over the corner speed (smooth inputs also keep
   // other players' predictions of this car accurate).
   let throttle = Math.max(-1, Math.min(profile.throttle, (cornerSpeed - speed) / 4));

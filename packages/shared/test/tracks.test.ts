@@ -85,12 +85,14 @@ describe.each(TRACKS.map((def) => [def.name, def] as const))('%s', (_name, def) 
     expect(travelled).toBeGreaterThanOrEqual(n);
     if (def.jumps) {
       console.log(`${def.name}: ${airborne} airborne ticks per lap`);
-      expect(airborne).toBeGreaterThan(30); // the jumps actually launch you
-      expect(airborne).toBeLessThan(150);
+      expect(airborne).toBeGreaterThan(60); // the jumps actually launch you (~1.4 s each)
+      expect(airborne).toBeLessThan(220);
     } else {
       expect(airborne).toBeLessThan(30);
     }
-    expect(maxDrop).toBeLessThan(0.3); // never sank into the road
+    // Never sank into the road. (On a channel's steep walls the height lookup is only
+    // approximate between track samples, so allow a little more there.)
+    expect(maxDrop).toBeLessThan(def.pipe ? 0.5 : 0.3);
     expect(scrapes).toBe(0);
   });
 

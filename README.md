@@ -36,7 +36,7 @@ URL options:
 |---|---|
 | `?room=CODE` | invite link: pre-fills the code on the start screen |
 | `?offline&bots=N` | skip the menu: offline practice/race against N bots |
-| `?track=ID` | track for offline play and the menu backdrop (`circuito`, `colline`, `serpente`, `salto`, `porto`) |
+| `?track=ID` | track for offline play and the menu backdrop (`circuito`, `colline`, `serpente`, `salto`, `porto`, `canalone`) |
 | `?weather=W` | weather for offline play (`clear`, `overcast`, `rain`, `fog`, `dusk`) |
 | `?autojoin` (+`room`, `name`, `bots`) | skip the menu and join (used by automated tests) |
 | `?bot` | autopilot drives your car |
@@ -62,8 +62,9 @@ packages/
   shared/   Simulation used by both client and server. No rendering, no DOM.
     config.ts   tick rate (60 Hz) and arcade tuning parameters
     input.ts    CarInput, the per-tick controls (this is what clients will send)
-    track.ts    tracks from a closed spline with heights → centre line, slope, banking, edges, walls
-    tracks.ts   the circuits (Circuito Uno, Colline, Il Serpente)
+    track.ts    tracks from a closed spline with heights → centre line, slope, banking, edges, walls,
+                and optional U-shaped channel profile (bobsled run)
+    tracks.ts   the circuits (Circuito Uno, Colline, Il Serpente, Il Salto, Porto Azzurro, Canalone)
     car.ts      arcade car controller (one rigid body, roll/pitch locked)
     world.ts    SimWorld: physics world + track + cars, fixed-step `step(inputs)`
     state.ts    CarState snapshot

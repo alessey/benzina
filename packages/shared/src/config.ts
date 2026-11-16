@@ -78,7 +78,7 @@ export interface CarTuning {
 
 export const DEFAULT_TUNING: CarTuning = {
   gravity: 25,
-  airGravity: 0.6,
+  airGravity: 0.8,
   maxSpeed: 45,
   accel: 22,
   brakeDecel: 40,

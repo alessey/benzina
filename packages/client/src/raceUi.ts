@@ -315,6 +315,7 @@ function trackFacts(track: Track): string {
   if (track.def.jumps) facts.push('jumps');
   if (track.def.tunnel) facts.push('tunnel');
   if (track.def.scenery === 'city') facts.push('street circuit');
+  if (track.def.pipe) facts.push('bobsled channel');
   return facts.join(' · ');
 }
 

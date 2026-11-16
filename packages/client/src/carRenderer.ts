@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { nearestSampleIndexNear, rightOf, yawOf, type CarState, type Correction, type SimWorld, type Track } from '@benzina/shared';
+import { CAR_RIDE_HEIGHT, nearestSampleIndexNear, profileSlope, rightOf, yawOf, type CarState, type Correction, type SimWorld, type Track } from '@benzina/shared';
 import type { CarChoice, CarClass } from '@benzina/shared';
 import { CarView, type BodyStyle } from './carView';
 
@@ -46,6 +46,8 @@ interface Entry {
   /** Visual pitch and roll following the road (physics keeps cars level). */
   pitch: number;
   roll: number;
+  /** Visual shift off the physics centre, out along a steep surface's normal. */
+  lean: THREE.Vector3;
   sampleHint: number;
 }
 
@@ -149,6 +151,7 @@ export class CarRenderer {
         fresh: true,
         pitch: 0,
         roll: 0,
+        lean: new THREE.Vector3(),
         sampleHint: 0,
       });
     }
@@ -228,6 +231,7 @@ export class CarRenderer {
       );
       const yaw = e.prev.yaw + wrapAngle(e.curr.yaw - e.prev.yaw) * alpha + o.yaw;
       this.tiltToRoad(e, yaw, dt);
+      this.tmpPos.add(e.lean);
       this.tmpEuler.set(e.pitch, yaw, e.roll);
       this.tmpRot.setFromEuler(this.tmpEuler);
       e.view.update(this.tmpPos, this.tmpRot, e.speed, e.steer, dt, e.braking);
@@ -252,14 +256,18 @@ export class CarRenderer {
       const k = 1 - Math.exp(-6 * dt);
       e.pitch += (-Math.atan(v.y / along) * 0.8 - e.pitch) * k;
       e.roll += (0 - e.roll) * k;
+      e.lean.multiplyScalar(1 - k);
       return;
     }
     e.sampleHint = nearestSampleIndexNear(this.track, this.tmpPos.x, this.tmpPos.z, e.sampleHint);
     const s = this.track.samples[e.sampleHint];
     const r = rightOf(s.tx, s.tz);
-    // Height gradient: climbs along the tangent, falls toward the right edge when banked.
-    const gx = s.slope * s.tx - Math.tan(s.bank) * r.x;
-    const gz = s.slope * s.tz - Math.tan(s.bank) * r.z;
+    // Height gradient: climbs along the tangent, falls toward the right edge when banked, and
+    // rises up a bobsled channel's walls.
+    const lat = (this.tmpPos.x - s.x) * r.x + (this.tmpPos.z - s.z) * r.z;
+    const wall = profileSlope(this.track.def, lat);
+    const gx = s.slope * s.tx - Math.tan(s.bank) * r.x + wall * r.x;
+    const gz = s.slope * s.tz - Math.tan(s.bank) * r.z + wall * r.z;
     const fx = Math.sin(yaw);
     const fz = Math.cos(yaw);
     // Rotation about the car's +X tips the nose down, so climbing is negative pitch;
@@ -269,6 +277,15 @@ export class CarRenderer {
     const k = 1 - Math.exp(-10 * dt);
     e.pitch += (pitch - e.pitch) * k;
     e.roll += (roll - e.roll) * k;
+    // Physics holds the car centre straight above the road; tilted onto a steep wall, it should
+    // sit out along the surface normal instead, or its wheels sink into the wall.
+    const len = Math.hypot(gx, 1, gz);
+    const tx = (-gx / len) * CAR_RIDE_HEIGHT;
+    const ty = (1 / len - 1) * CAR_RIDE_HEIGHT;
+    const tz = (-gz / len) * CAR_RIDE_HEIGHT;
+    e.lean.x += (tx - e.lean.x) * k;
+    e.lean.y += (ty - e.lean.y) * k;
+    e.lean.z += (tz - e.lean.z) * k;
   }
 
   /** Remove every car view (before the renderer is replaced). */

@@ -73,6 +73,11 @@ export function inTunnel(track: Track, i: number): boolean {
 export function trackPuddles(track: Track): Puddle[] {
   const cached = puddleCache.get(track);
   if (cached) return cached;
+  // A bobsled channel's ice has no standing water.
+  if (track.def.pipe) {
+    puddleCache.set(track, []);
+    return [];
+  }
   const rand = rng(track.def.id);
   const n = track.samples.length;
   const count = Math.max(3, Math.floor(track.length / 150));

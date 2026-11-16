@@ -1,4 +1,4 @@
-import type { TrackDef } from './track';
+import { pipeHalfWidth, type TrackDef } from './track';
 
 const BASE = { width: 14, wallHeight: 1.2, wallThickness: 1, samplesPerSegment: 24 } as const;
 
@@ -203,7 +203,52 @@ export const PORTO_AZZURRO: TrackDef = {
   ],
 };
 
-export const TRACKS: readonly TrackDef[] = [CIRCUITO_UNO, COLLINE, SERPENTE, IL_SALTO, PORTO_AZZURRO];
+/** Bobsled channel: flat floor 7 m wide, walls curving up to 60°, 3 m tall. */
+const CANALONE_PIPE = { floor: 3.5, radius: 6, angle: Math.PI / 3 };
+
+/**
+ * Canalone: a bobsled-style run down a snowy mountainside in a U-shaped ice channel. Corners
+ * swing cars up the outside wall; the faster and tighter, the higher. A climb brings it back
+ * to the top.
+ */
+export const CANALONE: TrackDef = {
+  ...BASE,
+  id: 'canalone',
+  name: 'Canalone',
+  width: 2 * pipeHalfWidth(CANALONE_PIPE),
+  wallHeight: 0.6,
+  pipe: CANALONE_PIPE,
+  scenery: 'snow',
+  controlPoints: [
+    { x: 0, z: 0, y: 34 },
+    { x: 0, z: 70, y: 34 },
+    { x: 0, z: 130, y: 32 },
+    { x: -25, z: 185, y: 30 },
+    { x: -80, z: 215, y: 27 },
+    { x: -140, z: 200, y: 24 },
+    { x: -165, z: 150, y: 21 },
+    { x: -140, z: 105, y: 19 },
+    { x: -95, z: 80, y: 17 },
+    { x: -80, z: 40, y: 15 },
+    { x: -110, z: 0, y: 13 },
+    { x: -160, z: -20, y: 11 },
+    { x: -205, z: -55, y: 9 },
+    { x: -210, z: -110, y: 7 },
+    { x: -175, z: -150, y: 5 },
+    { x: -115, z: -150, y: 4 },
+    { x: -70, z: -120, y: 4 },
+    { x: -30, z: -140, y: 5 },
+    { x: 20, z: -160, y: 8 },
+    { x: 80, z: -150, y: 13 },
+    { x: 120, z: -110, y: 18 },
+    { x: 125, z: -55, y: 23 },
+    { x: 95, z: -20, y: 27 },
+    { x: 40, z: -60, y: 31 },
+    { x: 0, z: -50, y: 34 },
+  ],
+};
+
+export const TRACKS: readonly TrackDef[] = [CIRCUITO_UNO, COLLINE, SERPENTE, IL_SALTO, PORTO_AZZURRO, CANALONE];
 export const DEFAULT_TRACK = CIRCUITO_UNO;
 
 export function trackById(id: string | undefined): TrackDef {

@@ -34,11 +34,71 @@ export interface TrackDef {
   /** The track has jumps: steeper ramps and airtime are intended (relaxes validation). */
   jumps?: boolean;
   /** Scenery style: open countryside (default) or a city street circuit. */
-  scenery?: 'country' | 'city';
+  scenery?: 'country' | 'city' | 'snow';
   /** A covered section, from one control point to another (indices into controlPoints). */
   tunnel?: [number, number];
+  /**
+   * A U-shaped channel instead of a flat road (bobsled run): a flat floor `floor` metres
+   * either side of the centre, then curved walls of `radius` rising to `angle` radians at the
+   * top. `width` must equal 2 × (floor + radius × sin(angle)).
+   */
+  pipe?: PipeProfile;
   /** Areas of open water (harbour), as x/z rectangles. Visual only. */
   water?: { minX: number; maxX: number; minZ: number; maxZ: number }[];
+}
+
+export interface PipeProfile {
+  floor: number;
+  radius: number;
+  angle: number;
+}
+
+/** Half width of a pipe profile (floor plus the walls' horizontal reach). */
+export function pipeHalfWidth(p: PipeProfile): number {
+  return p.floor + p.radius * Math.sin(p.angle);
+}
+
+/** Height of the cross-section above the centre line at lateral offset `lat` (0 when flat). */
+export function profileHeight(def: TrackDef, lat: number): number {
+  const p = def.pipe;
+  if (!p) return 0;
+  const u = Math.min(Math.max(0, Math.abs(lat) - p.floor), p.radius * Math.sin(p.angle));
+  return p.radius - Math.sqrt(p.radius * p.radius - u * u);
+}
+
+/** Slope of the cross-section (rise per metre to the right) at lateral offset `lat`. */
+export function profileSlope(def: TrackDef, lat: number): number {
+  const p = def.pipe;
+  if (!p) return 0;
+  const u = Math.abs(lat) - p.floor;
+  if (u <= 0) return 0;
+  const uc = Math.min(u, p.radius * Math.sin(p.angle));
+  return Math.sign(lat) * (uc / Math.sqrt(p.radius * p.radius - uc * uc));
+}
+
+/**
+ * Where on a pipe wall the cross-section has slope `m` (rise per metre outward): distance from
+ * the centre line, capped short of the top. 0 on flat roads.
+ */
+export function pipeOffsetForSlope(def: TrackDef, m: number, topFraction = 0.85): number {
+  const p = def.pipe;
+  if (!p || m <= 0) return 0;
+  const u = (p.radius * m) / Math.sqrt(1 + m * m);
+  return p.floor + Math.min(u, p.radius * Math.sin(p.angle) * topFraction);
+}
+
+/**
+ * Lateral positions across the road, as fractions of the half width (-1 = left edge, 1 =
+ * right). Flat roads need only the edges; a pipe needs its floor edges and the curved walls.
+ */
+export function crossSection(def: TrackDef): number[] {
+  const p = def.pipe;
+  if (!p) return [-1, 1];
+  const hw = pipeHalfWidth(p);
+  const steps = 8;
+  const right: number[] = [];
+  for (let k = 0; k <= steps; k++) right.push((p.floor + (p.radius * Math.sin((p.angle * k) / steps))) / hw);
+  return [...right.slice().reverse().map((f) => -f), ...right];
 }
 
 export interface TrackSample extends Vec3 {
@@ -211,8 +271,9 @@ export function buildTrack(def: TrackDef): Track {
     const r = rightOf(s.tx, s.tz);
     const across = hw * Math.cos(s.bank);
     const rise = hw * Math.sin(s.bank);
-    leftEdge.push({ x: s.x - r.x * across, y: s.y + rise, z: s.z - r.z * across });
-    rightEdge.push({ x: s.x + r.x * across, y: s.y - rise, z: s.z + r.z * across });
+    const wall = profileHeight(def, hw);
+    leftEdge.push({ x: s.x - r.x * across, y: s.y + rise + wall, z: s.z - r.z * across });
+    rightEdge.push({ x: s.x + r.x * across, y: s.y - rise + wall, z: s.z + r.z * across });
   }
 
   const walls = [
@@ -343,5 +404,21 @@ export function roadHeightAt(track: Track, x: number, z: number, hint?: number):
   const s = track.samples[i];
   const r = rightOf(s.tx, s.tz);
   const across = (x - s.x) * r.x + (z - s.z) * r.z;
-  return s.y - Math.tan(s.bank) * across;
+  return s.y - Math.tan(s.bank) * across + profileHeight(track.def, across);
+}
+
+/**
+ * A point on the road surface at sample i, `frac` of the half width across (-1..1, see
+ * crossSection), following banking and the pipe profile. Used to build road meshes.
+ */
+export function roadPoint(track: Track, i: number, frac: number, lift = 0): Vec3 {
+  const s = track.samples[i];
+  const r = rightOf(s.tx, s.tz);
+  const hw = track.def.width / 2;
+  const across = frac * hw * Math.cos(s.bank);
+  return {
+    x: s.x + r.x * across,
+    y: s.y - Math.tan(s.bank) * across + profileHeight(track.def, frac * hw) + lift,
+    z: s.z + r.z * across,
+  };
 }

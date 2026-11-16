@@ -3,7 +3,7 @@ import { Car, GROUP_ROAD, HALF_L, HALF_W } from './car';
 import type { CarClass } from './cars';
 import { DEFAULT_TUNING, DT, type CarTuning } from './config';
 import { NEUTRAL_INPUT, type CarInput } from './input';
-import { gridSlot, type Track, type Vec3 } from './track';
+import { crossSection, gridSlot, roadPoint, type Track, type Vec3 } from './track';
 import type { Weather } from './weather';
 
 const GROUND_HALF_SIZE = 2000;
@@ -270,16 +270,22 @@ function boxContact(
 /** Closed strip between the left and right road edges, facing up. */
 function roadMesh(track: Track): [Float32Array, Uint32Array] {
   const n = track.samples.length;
-  const vertices = new Float32Array(n * 6);
-  const indices = new Uint32Array(n * 6);
+  const cols = crossSection(track.def);
+  const m = cols.length;
+  const vertices = new Float32Array(n * m * 3);
+  const indices = new Uint32Array(n * (m - 1) * 6);
   for (let i = 0; i < n; i++) {
-    const l = track.leftEdge[i];
-    const r = track.rightEdge[i];
-    vertices.set([l.x, l.y, l.z, r.x, r.y, r.z], i * 6);
-    const a = i * 2;
-    const b = ((i + 1) % n) * 2;
-    // Left(i), right(i), left(i+1): with left = -right, this winding faces up.
-    indices.set([a, a + 1, b, a + 1, b + 1, b], i * 6);
+    cols.forEach((f, j) => {
+      const p = roadPoint(track, i, f);
+      vertices.set([p.x, p.y, p.z], (i * m + j) * 3);
+    });
+    const next = (i + 1) % n;
+    for (let j = 0; j < m - 1; j++) {
+      const a = i * m + j;
+      const b = next * m + j;
+      // Column j is left of j+1: (a, a+1, b) winds to face up, as for a flat strip.
+      indices.set([a, a + 1, b, a + 1, b + 1, b], (i * (m - 1) + j) * 6);
+    }
   }
   return [vertices, indices];
 }
@@ -304,8 +310,11 @@ function wallMesh(edge: Vec3[], track: Track, height: number, facing: 1 | -1): [
   const indices = new Uint32Array(n * 6);
   edge.forEach((p, i) => {
     // Jump tracks get tall invisible walls, so a car in the air can't sail out of the circuit.
-    const top = Math.max(p.y, track.samples[i].y) + height + (track.def.jumps ? WALL_TOP_MARGIN_JUMPS : WALL_TOP_MARGIN);
-    vertices.set([p.x, p.y - 1, p.z, p.x, top, p.z], i * 6);
+    const top = Math.max(p.y, track.samples[i].y) + height + (track.def.jumps || track.def.pipe ? WALL_TOP_MARGIN_JUMPS : WALL_TOP_MARGIN);
+    // In a channel the wall stands at the lip, high above the floor: reach down below the ice,
+    // or a car riding high on the wall catches the wall's bottom edge and is thrown upward.
+    const bottom = track.def.pipe ? track.samples[i].y - 1 : p.y - 1;
+    vertices.set([p.x, bottom, p.z, p.x, top, p.z], i * 6);
   });
   for (let i = 0; i < n; i++) {
     const a = i * 2;

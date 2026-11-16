@@ -4,9 +4,19 @@ import { CLASS_SPECS, classTuning, type CarClass } from './cars';
 import { PUDDLE, surfaceTuning, type Weather } from './weather';
 import type { CarInput } from './input';
 import { type CarState, yawOf, yawQuat } from './state';
-import { nearestSampleIndex, nearestSampleIndexNear, rightOf, roadHeightAt, type Track } from './track';
+import { nearestSampleIndex, nearestSampleIndexNear, profileHeight, profileSlope, rightOf, roadHeightAt, type Track } from './track';
 
 const FALL_RESET_Y = -10;
+/** Bobsled channels: how strongly cornering swings a car outward, up the wall (0..1). */
+const PIPE_SWING = 1;
+/** Bobsled channels: how quickly the car's height error to the ice is corrected (1/s). */
+const PIPE_HOLD = 12;
+/** Bobsled channels: how far above the ice (beyond ride height) the hold still works (m). */
+const PIPE_REACH = 1.5;
+/** Bobsled channels: fastest height correction toward the ice (m/s), so it never launches. */
+const PIPE_HOLD_MAX = 3;
+/** Bobsled channels: the suspension ray starts this far above the car (m). */
+const PIPE_RAY_LIFT = 2;
 /** Collision group bits: membership in the high 16 bits, what we collide with in the low 16. */
 export const GROUP_ROAD = 0x0002;
 const GROUP_CAR = 0x0004;
@@ -152,9 +162,14 @@ export class Car {
 
     // Look further down when falling fast, so a hard landing is caught before the car passes
     // through the road (the body no longer collides with the road surface).
-    const reach = CAR_RIDE_HEIGHT + SUSPENSION_TRAVEL;
-    const ray = new RAPIER.Ray(pos, { x: 0, y: -1, z: 0 });
-    const far = this.world.castRay(ray, Math.max(reach, CAR_RIDE_HEIGHT - v.y * dt * 2 + 0.2), true, RAPIER.QueryFilterFlags.EXCLUDE_DYNAMIC);
+    // In a bobsled channel the ice holds the car from further away (see PIPE_HOLD).
+    const reach = CAR_RIDE_HEIGHT + (this.track.def.pipe ? PIPE_REACH : SUSPENSION_TRAVEL);
+    // Channels: cast from above the car, so a car swung hard up a steepening wall (centre
+    // momentarily below the ice) still finds it. Distances are measured from the car centre.
+    const lift = this.track.def.pipe ? PIPE_RAY_LIFT : 0;
+    const ray = new RAPIER.Ray({ x: pos.x, y: pos.y + lift, z: pos.z }, { x: 0, y: -1, z: 0 });
+    const cast = this.world.castRay(ray, lift + Math.max(reach, CAR_RIDE_HEIGHT - v.y * dt * 2 + 0.2), true, RAPIER.QueryFilterFlags.EXCLUDE_DYNAMIC);
+    const far = cast ? { timeOfImpact: cast.timeOfImpact - lift } : null;
     const hit = far && far.timeOfImpact <= reach ? far : null;
     let vy = v.y;
 
@@ -170,13 +185,20 @@ export class Car {
       // fast the road rises under us = slope × speed along the track), like a real damper,
       // so the car follows hills without lagging into the road.
       this.sampleHint = nearestSampleIndexNear(this.track, pos.x, pos.z, this.sampleHint);
-      const under = this.track.samples[this.sampleHint];
-      const roadVy = under.slope * (v.x * under.tx + v.z * under.tz);
+      const roadVy = this.roadRise(pos.x, pos.z, v.x, v.z);
       const compression = CAR_RIDE_HEIGHT - hit.timeOfImpact;
       // Suspension can only push: when the road drops away faster than gravity pulls the car
       // down (a jump lip, a sharp crest), there's no force at all and the car flies.
       const support = t.gravity + t.suspensionStiffness * compression - t.suspensionDamping * (vy - roadVy);
-      if (support > 0) vy += support * dt;
+      if (this.track.def.pipe) {
+        // Bobsled channel: the car is held to the ice, following the curved walls exactly as it
+        // swings up and back down (a hover spring alone would fling it off the top of a swing).
+        // Gravity is added back because Rapier applies it during the step.
+        const follow = this.pipeRiseAhead(pos.x, pos.z, v.x, v.z, dt);
+        vy = follow + clamp(compression * PIPE_HOLD, -PIPE_HOLD_MAX, PIPE_HOLD_MAX) + t.gravity * dt;
+      } else if (support > 0) {
+        vy += support * dt;
+      }
       // Bump-stop: deep in the travel (a hard landing), stop sinking toward the road rather than
       // letting the body hit it. Body-road contact is solver state that snapshots can't
       // restore, so it would also make landings mispredict.
@@ -186,7 +208,7 @@ export class Car {
       // crash gets eased out instead of being shot into the air by the contact solver.
       // The road's rise is measured at the nearest sample, which reads flat right on a jump
       // lip; take the steepest rise of the neighbouring samples too, so the lip still launches.
-      if (this.grounded) vy = Math.min(vy, this.maxRoadRise(v.x, v.z) + MAX_HOP_SPEED);
+      if (this.grounded) vy = Math.min(vy, this.maxRoadRise(v.x, v.z) + this.wallRise(pos.x, pos.z, v.x, v.z) + (this.track.def.pipe ? 0.5 : MAX_HOP_SPEED));
     } else {
       // In the air: a little arcade hang time (part of gravity is cancelled).
       vy += t.gravity * (1 - t.airGravity) * dt;
@@ -194,8 +216,7 @@ export class Car {
     if (far) {
       // Landing guard: never end this tick deeper than the bump-stop, however fast we fall.
       this.sampleHint = nearestSampleIndexNear(this.track, pos.x, pos.z, this.sampleHint);
-      const under = this.track.samples[this.sampleHint];
-      const roadVy = under.slope * (v.x * under.tx + v.z * under.tz);
+      const roadVy = this.roadRise(pos.x, pos.z, v.x, v.z);
       const room = far.timeOfImpact - (CAR_RIDE_HEIGHT - BUMP_STOP);
       const fallNext = (vy - roadVy - t.gravity * dt) * dt;
       if (fallNext < -room) vy = roadVy + t.gravity * dt - Math.max(0, room) / dt;
@@ -239,6 +260,17 @@ export class Car {
       const sample = this.track.samples[this.sampleHint];
       vF -= t.gravity * sample.slope * (fx * sample.tx + fz * sample.tz) * dt;
 
+      // Bobsled channel walls: gravity pulls the car back down the wall (along and across the
+      // car), and cornering swings it outward, up the outside wall, until the two balance:
+      // the faster and tighter the corner, the higher the car rides.
+      const ps = this.wallSlope(pos.x, pos.z);
+      if (ps !== 0 || this.track.def.pipe) {
+        const r = rightOf(sample.tx, sample.tz);
+        vF -= t.gravity * ps * (fx * r.x + fz * r.z) * dt;
+        vL -= t.gravity * ps * (rx * r.x + rz * r.z) * dt;
+        vL += PIPE_SWING * vF * yawRate * dt;
+      }
+
       // Tyre saturation: past the peak slip angle, grip and steering authority fall away, so
       // a hard hit turns into a slide or spin you have to catch. Slip is measured at the rear
       // axle: in normal cornering the car pivots there (no slip), but when the tail is knocked
@@ -267,7 +299,9 @@ export class Car {
       // turning away from a wall you're on or right next to gets the same allowance, so the
       // grip limit never leaves you stuck along an outside wall.
       const wallEscape = wall.near !== 0 && wall.near * this.steer < 0;
-      const maxCornerYaw = (t.cornerGrip * (input.handbrake || wallEscape ? 1.6 : 1)) / Math.max(4, Math.abs(vF));
+      // A wall rising on the outside of the turn holds the car in, like a banked corner.
+      const bankHelp = ps * targetYawRate * Math.sign(vF) < 0 ? 0 : t.gravity * Math.sin(Math.atan(Math.abs(ps)));
+      const maxCornerYaw = (t.cornerGrip * (input.handbrake || wallEscape ? 1.6 : 1) + bankHelp) / Math.max(4, Math.abs(vF));
       targetYawRate = clamp(targetYawRate, -maxCornerYaw, maxCornerYaw);
       // Pointed into the wall? Turn parallel to it so the car glances off instead of pinning.
       // (Turning away from the right wall is a left turn, i.e. positive yaw.)
@@ -303,9 +337,11 @@ export class Car {
 
       this.body.setLinvel({ x: vx, y: vy, z: vz }, true);
     } else {
-      // Airborne: no control, spin slowly bleeds off.
+      // Airborne: no control, spin slowly bleeds off. Vertical speed still applies: hang time,
+      // the landing guard and the channel's hold all adjust it.
       this.wallSide = 0;
       yawRate *= Math.exp(-2 * dt);
+      this.body.setLinvel({ x: v.x, y: vy, z: v.z }, true);
     }
 
     this.body.setAngvel({ x: 0, y: yawRate, z: 0 }, true);
@@ -351,10 +387,42 @@ export class Car {
     return { side, nx: r.x, nz: r.z, into: Math.max(0, side * fDotR), near };
   }
 
+  /** Slope of a pipe wall under (x, z): rise per metre toward the track's right (0 when flat). */
+  private wallSlope(x: number, z: number): number {
+    if (!this.track.def.pipe) return 0;
+    const s = this.track.samples[this.sampleHint];
+    const r = rightOf(s.tx, s.tz);
+    return profileSlope(this.track.def, (x - s.x) * r.x + (z - s.z) * r.z);
+  }
+
+  /** How fast a pipe wall rises under us (m/s) as we move across it. */
+  private wallRise(x: number, z: number, vx: number, vz: number): number {
+    const ps = this.wallSlope(x, z);
+    if (ps === 0) return 0;
+    const s = this.track.samples[this.sampleHint];
+    const r = rightOf(s.tx, s.tz);
+    return ps * (vx * r.x + vz * r.z);
+  }
+
   /**
-   * Ended up under an elevated road (squeezed through it in a crash)? Only checked on the
-   * circuit itself; off it there's no road above to be under.
+   * Channels: how fast the ice rises under us over the next tick (m/s), from the wall's actual
+   * height where we'll be (the wall steepens outward, so its slope here underestimates it).
    */
+  private pipeRiseAhead(x: number, z: number, vx: number, vz: number, dt: number): number {
+    const s = this.track.samples[this.sampleHint];
+    const r = rightOf(s.tx, s.tz);
+    const lat = (x - s.x) * r.x + (z - s.z) * r.z;
+    const next = lat + (vx * r.x + vz * r.z) * dt;
+    const wall = (profileHeight(this.track.def, next) - profileHeight(this.track.def, lat)) / dt;
+    return s.slope * (vx * s.tx + vz * s.tz) + wall;
+  }
+
+  /** How fast the road rises under us (m/s): slope along the track plus any pipe wall. */
+  private roadRise(x: number, z: number, vx: number, vz: number): number {
+    const s = this.track.samples[this.sampleHint];
+    return s.slope * (vx * s.tx + vz * s.tz) + this.wallRise(x, z, vx, vz);
+  }
+
   /** Steepest road rise (m/s at our velocity) over the nearest sample and its neighbours. */
   private maxRoadRise(vx: number, vz: number): number {
     const n = this.track.samples.length;
@@ -366,6 +434,10 @@ export class Car {
     return best;
   }
 
+  /**
+   * Ended up under an elevated road (squeezed through it in a crash)? Only checked on the
+   * circuit itself; off it there's no road above to be under.
+   */
   private belowRoad(x: number, y: number, z: number): boolean {
     this.sampleHint = nearestSampleIndexNear(this.track, x, z, this.sampleHint);
     const s = this.track.samples[this.sampleHint];

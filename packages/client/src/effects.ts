@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { CAR_RIDE_HEIGHT, inTunnel, nearestSampleIndexNear, roadHeightAt, yawOf, type SimWorld, type Track } from '@benzina/shared';
+import { CAR_RIDE_HEIGHT, inTunnel, nearestSampleIndex, nearestSampleIndexNear, profileSlope, roadHeightAt, yawOf, type SimWorld, type Track } from '@benzina/shared';
 
 const MAX_MARKS = 1600;
 const MAX_SMOKE = 700;
@@ -104,7 +104,10 @@ export class Effects {
       const vL = v.x * -fz + v.z * fx;
       const speed = Math.hypot(vF, vL);
       // Sliding: sideways speed, a spin, or locked-up hard braking.
-      const sliding = car.grounded && speed > 6 && (Math.abs(vL) > 4.5 || car.upset > 0.25 || Math.abs(car.body.angvel().y) > 2.4);
+      // In a bobsled channel sliding up the walls is normal driving: only real spins count.
+      const sliding = this.track.def.pipe
+        ? car.grounded && speed > 6 && car.upset > 0.25
+        : car.grounded && speed > 6 && (Math.abs(vL) > 4.5 || car.upset > 0.25 || Math.abs(car.body.angvel().y) > 2.4);
       const intensity = sliding ? Math.min(1, (Math.abs(vL) - 3) / 8 + car.upset) : 0;
 
       // Rain: spray off the rear tyres at speed, a burst through puddles (none in the tunnel).
@@ -152,6 +155,8 @@ export class Effects {
   private addMark(a: THREE.Vector3, b: THREE.Vector3): void {
     const len = a.distanceTo(b);
     if (len > 3) return; // teleport (reset/correction), not a skid
+    // Marks are laid flat: none up a channel's steep walls.
+    if (this.onWall(b)) return;
     const mid = a.clone().add(b).multiplyScalar(0.5);
     this.q.setFromAxisAngle(this.up, Math.atan2(b.x - a.x, b.z - a.z));
     this.m.compose(mid, this.q, new THREE.Vector3(1, 1, len + 0.05));
@@ -173,6 +178,13 @@ export class Effects {
     this.smokeVel.set([v.x * 0.35 + (Math.random() - 0.5) * spread, up, v.z * 0.35 + (Math.random() - 0.5) * spread], i * 3);
     // Spray fades faster than smoke: start it part-way through its life.
     this.smokeAge[i] = big ? 0.6 : 1.05;
+  }
+
+  private onWall(p: THREE.Vector3): boolean {
+    if (!this.track.def.pipe) return false;
+    const s = this.track.samples[nearestSampleIndex(this.track, p.x, p.z)];
+    const lat = (p.x - s.x) * -s.tz + (p.z - s.z) * s.tx;
+    return Math.abs(profileSlope(this.track.def, lat)) > 0.15;
   }
 
   private puff(at: THREE.Vector3, v: { x: number; z: number }): void {

@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { nearestSampleIndex, type Track, type Vec3, type Weather } from '@benzina/shared';
+import { crossSection, nearestSampleIndex, rightOf, roadPoint, type Track, type Vec3, type Weather } from '@benzina/shared';
 import { buildPuddles, cameraInTunnel, LOOKS, paintSky, Rain, skyEnvironment, type WeatherLook } from './weatherFx';
 
 export interface GameScene {
@@ -134,7 +134,8 @@ export function createScene(opts: SceneOptions): GameScene {
     if (road) {
       dryRoad ??= road.material as THREE.Material;
       if (road.material !== wetRoad && road.material !== dryRoad) dryRoad = road.material as THREE.Material;
-      road.material = look.wet ? wetRoad : dryRoad;
+      // A bobsled channel is ice, not asphalt: it keeps its own surface in the rain.
+      road.material = look.wet && !terrain?.track.def.pipe ? wetRoad : dryRoad;
     }
     const puddles = trackGroup.getObjectByName('puddles');
     if (puddles) puddles.visible = look.wet;
@@ -304,13 +305,17 @@ class Terrain {
         // bank only as far as the edge: on the inside of a banked corner the edge is well
         // below the centre line, and terrain at centre height would poke through.
         const across = (x - s.x) * -s.tz + (z - s.z) * s.tx;
-        const nearRoad = s.y - Math.tan(s.bank) * Math.max(-hw, Math.min(hw, across)) - 0.45;
+        const clamped = Math.max(-hw, Math.min(hw, across));
+        // (A bobsled channel stands on ground at its floor level, walls and all: the terrain
+        // grid is too coarse to follow its curved walls without cutting through them.)
+        const nearRoad = s.y - Math.tan(s.bank) * clamped - 0.45;
         // Edges of the terrain fade down to the far ground plane.
         const edge = Math.min(c, r, this.cols - 1 - c, this.rows - 1 - r) * cell;
         const fade = smoothstep(0, 120, edge);
         const wet = inWater(track, x, z);
         // Countryside rolls; a city climbs the hillside with its streets; the harbour is deep.
-        const land = track.def.scenery === 'city' ? s.y * 0.9 : this.hills(x, z);
+        const scenery = track.def.scenery;
+        const land = scenery === 'city' ? s.y * 0.9 : scenery === 'snow' ? s.y * 0.85 + this.hills(x, z) * 1.6 : this.hills(x, z);
         const natural = wet ? WATER_FLOOR : land * fade + FAR_GROUND_Y * (1 - fade);
         // At the water's edge the land drops sharply (a quay wall) instead of a long bank.
         const w = wet ? smoothstep(hw + 2, hw + 9, d) : smoothstep(hw + 4, hw + 50, d);
@@ -356,10 +361,15 @@ class Terrain {
     // PlaneGeometry rows run from -z to +z after rotation; map each vertex to our grid.
     const pos = geo.getAttribute('position');
     const colors: number[] = [];
-    const city = this.track.def.scenery === 'city';
-    const grass = new THREE.Color(city ? 0xbdb4a2 : 0x6f9a45);
-    const grassDark = new THREE.Color(city ? 0xa69d8b : 0x587f36);
-    const dirt = new THREE.Color(city ? 0x8c8a86 : 0x9a8a62);
+    const scenery = this.track.def.scenery ?? 'country';
+    const palette = {
+      country: [0x6f9a45, 0x587f36, 0x9a8a62],
+      city: [0xbdb4a2, 0xa69d8b, 0x8c8a86],
+      snow: [0xf2f5f8, 0xdbe4ec, 0xcdd7e0],
+    }[scenery];
+    const grass = new THREE.Color(palette[0]);
+    const grassDark = new THREE.Color(palette[1]);
+    const dirt = new THREE.Color(palette[2]);
     const c = new THREE.Color();
     for (let i = 0; i < pos.count; i++) {
       const x = pos.getX(i) + this.minX + ((this.cols - 1) * this.cell) / 2;
@@ -392,6 +402,7 @@ function buildTrackScenery(track: Track, terrain: Terrain): THREE.Group {
   group.add(buildStartLine(track));
   for (const ramp of buildRampMarkings(track)) group.add(ramp);
   group.add(buildWalls(track));
+  if (track.def.pipe) group.add(buildChannelSides(track));
   if (track.def.scenery === 'city') {
     group.add(buildBuildings(track, terrain));
   } else {
@@ -409,7 +420,7 @@ function buildTrackScenery(track: Track, terrain: Terrain): THREE.Group {
 /** Flat ground beyond the terrain, out to the fog. */
 function buildFarGround(track: Track): THREE.Mesh {
   const b = track.bounds;
-  const color = track.def.scenery === 'city' ? 0xb3aa98 : 0x6a9442;
+  const color = track.def.scenery === 'city' ? 0xb3aa98 : track.def.scenery === 'snow' ? 0xe9eef2 : 0x6a9442;
   const mesh = new THREE.Mesh(new THREE.PlaneGeometry(6000, 6000), new THREE.MeshLambertMaterial({ color }));
   mesh.rotation.x = -Math.PI / 2;
   mesh.position.set((b.minX + b.maxX) / 2, FAR_GROUND_Y, (b.minZ + b.maxZ) / 2);
@@ -451,10 +462,92 @@ function stripGeometry(a: Vec3[], b: Vec3[], lift: number, colorOf?: (i: number)
 }
 
 function buildRoad(track: Track): THREE.Mesh {
-  const mesh = new THREE.Mesh(stripGeometry(track.leftEdge, track.rightEdge, 0.02), surfaceMaterial(1, { color: 0x3d3f44 }));
+  const geo = track.def.pipe ? channelGeometry(track) : stripGeometry(track.leftEdge, track.rightEdge, 0.02);
+  const mat = track.def.pipe ? surfaceMaterial(1, { vertexColors: true }) : surfaceMaterial(1, { color: 0x3d3f44 });
+  const mesh = new THREE.Mesh(geo, mat);
   mesh.name = 'road';
   mesh.receiveShadow = true;
   mesh.renderOrder = ORDER.road;
+  return mesh;
+}
+
+/**
+ * A bobsled channel's ice: the cross-section swept along the track, pale blue on the floor
+ * shading to white up the walls, with a faint blue guide line down each side of the floor.
+ */
+function channelGeometry(track: Track): THREE.BufferGeometry {
+  const cols = crossSection(track.def);
+  const n = track.samples.length;
+  const m = cols.length;
+  const pos: number[] = [];
+  const col: number[] = [];
+  const idx: number[] = [];
+  const floor = new THREE.Color(0xeef5fa);
+  const wall = new THREE.Color(0xffffff);
+  const line = new THREE.Color(0x7fa8d4);
+  const c = new THREE.Color();
+  const pipe = track.def.pipe!;
+  const hw = track.def.width / 2;
+  for (let i = 0; i < n; i++) {
+    cols.forEach((f) => {
+      const p = roadPoint(track, i, f, 0.02);
+      pos.push(p.x, p.y, p.z);
+      const up = Math.max(0, Math.abs(f * hw) - pipe.floor) / (hw - pipe.floor);
+      c.copy(floor).lerp(wall, Math.min(1, up * 1.4));
+      // The floor's edges (where the walls begin) carry a blue line.
+      if (Math.abs(Math.abs(f * hw) - pipe.floor) < 1e-3) c.copy(line);
+      col.push(c.r, c.g, c.b);
+    });
+  }
+  for (let i = 0; i < n; i++) {
+    const next = (i + 1) % n;
+    for (let j = 0; j < m - 1; j++) {
+      const a = i * m + j;
+      const b = next * m + j;
+      idx.push(a, b, a + 1, a + 1, b, b + 1);
+    }
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+  geo.setIndex(idx);
+  geo.computeVertexNormals();
+  // Face up whichever way round the columns run.
+  if (geo.getAttribute('normal').getY(Math.floor(m / 2)) < 0) {
+    geo.setIndex(idx.map((_, k) => idx[k - (k % 3) + [0, 2, 1][k % 3]]));
+    geo.computeVertexNormals();
+  }
+  return geo;
+}
+
+/** The outside faces of a bobsled channel's walls, from the lip down into the ground. */
+function buildChannelSides(track: Track): THREE.Mesh {
+  const n = track.samples.length;
+  const pos: number[] = [];
+  const idx: number[] = [];
+  for (const [edge, side] of [[track.leftEdge, -1], [track.rightEdge, 1]] as const) {
+    const base = pos.length / 3;
+    for (let i = 0; i < n; i++) {
+      const e = edge[i];
+      const s = track.samples[i];
+      const r = rightOf(s.tx, s.tz);
+      // Slightly outside the lip, so the face never shows through the ice.
+      const x = e.x + r.x * side * 0.05;
+      const z = e.z + r.z * side * 0.05;
+      pos.push(x, e.y, z, x, s.y - 1.2, z);
+    }
+    for (let i = 0; i < n; i++) {
+      const a = base + i * 2;
+      const b = base + ((i + 1) % n) * 2;
+      idx.push(a, b, a + 1, a + 1, b, b + 1);
+    }
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.setIndex(idx);
+  geo.computeVertexNormals();
+  const mesh = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ color: 0xd9e1e8, side: THREE.DoubleSide }));
+  mesh.receiveShadow = true;
   return mesh;
 }
 
@@ -472,12 +565,19 @@ function offsetEdge(track: Track, edge: Vec3[], amount: number): Vec3[] {
 
 /** One mesh per side, red and white stripes. */
 function buildCurbs(track: Track): THREE.Mesh[] {
-  const red = new THREE.Color(0xd23a2e);
+  // Ice channels get a blue-and-white lip instead of red-and-white curbs.
+  const red = new THREE.Color(track.def.pipe ? 0x3a78c0 : 0xd23a2e);
   const white = new THREE.Color(0xf2f2f2);
   const stripe = (i: number) => (Math.floor(i / 2) % 2 === 0 ? red : white);
   const mat = surfaceMaterial(2, { vertexColors: true });
-  return [track.leftEdge, track.rightEdge].map((edge) => {
-    const mesh = new THREE.Mesh(stripGeometry(edge, offsetEdge(track, edge, 0.9), 0.04, stripe), mat);
+  // A channel's lip follows the curved wall, so it's built from points on the surface.
+  const lip = (side: number) => {
+    const inner = 1 - 0.9 / (track.def.width / 2);
+    return track.samples.map((_, i) => roadPoint(track, i, side * inner));
+  };
+  return [track.leftEdge, track.rightEdge].map((edge, k) => {
+    const inner = track.def.pipe ? lip(k === 0 ? -1 : 1) : offsetEdge(track, edge, 0.9);
+    const mesh = new THREE.Mesh(stripGeometry(edge, inner, 0.04, stripe), mat);
     mesh.receiveShadow = true;
     mesh.renderOrder = ORDER.curb;
     return mesh;
@@ -542,20 +642,16 @@ function buildStartLine(track: Track): THREE.Mesh {
   const s0 = track.samples[0];
   const half = track.def.width / 8; // the line is a quarter of the road width deep
   const lift = 0.06;
-  const left = track.leftEdge[0];
-  const right = track.rightEdge[0];
-  const cols = 8;
+  const cols = track.def.pipe ? 24 : 8;
   const pos: number[] = [];
   const uv: number[] = [];
   const idx: number[] = [];
   for (const [row, along] of [-half, half].entries()) {
     for (let c = 0; c <= cols; c++) {
       const t = c / cols;
-      pos.push(
-        left.x + (right.x - left.x) * t + s0.tx * along,
-        left.y + (right.y - left.y) * t + s0.slope * along + lift,
-        left.z + (right.z - left.z) * t + s0.tz * along,
-      );
+      // On the road surface across its width (following a channel's curved walls).
+      const p = roadPoint(track, 0, -1 + 2 * t);
+      pos.push(p.x + s0.tx * along, p.y + s0.slope * along + lift, p.z + s0.tz * along);
       uv.push(t, row);
     }
   }
@@ -624,7 +720,9 @@ function buildTrees(track: Track, terrain: Terrain): THREE.Group {
     const z = minZ + rand() * (maxZ - minZ);
     const s = track.samples[nearestSampleIndex(track, x, z)];
     if (Math.hypot(s.x - x, s.z - z) < clearance) continue;
-    spots.push({ x, y: terrain.heightAt(x, z), z, s: 0.7 + rand() * 0.8, round: rand() < 0.35 });
+    // Snowy mountainsides grow only pines.
+    const round = track.def.scenery !== 'snow' && rand() < 0.35;
+    spots.push({ x, y: terrain.heightAt(x, z), z, s: 0.7 + rand() * 0.8, round });
   }
   const pines = spots.filter((p) => !p.round);
   const rounds = spots.filter((p) => p.round);
@@ -633,7 +731,7 @@ function buildTrees(track: Track, terrain: Terrain): THREE.Group {
   const trunks = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.3, 0.4, 2, 6), trunkMat, spots.length);
   const pineCrowns = new THREE.InstancedMesh(
     new THREE.ConeGeometry(2.2, 6, 7),
-    new THREE.MeshLambertMaterial({ color: 0x2f6b33 }),
+    new THREE.MeshLambertMaterial({ color: track.def.scenery === 'snow' ? 0x3f6650 : 0x2f6b33 }),
     pines.length,
   );
   const roundCrowns = new THREE.InstancedMesh(
