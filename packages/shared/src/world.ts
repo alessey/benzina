@@ -1,5 +1,5 @@
 import { RAPIER } from './physics';
-import { Car, HALF_L, HALF_W } from './car';
+import { Car, GROUP_ROAD, HALF_L, HALF_W } from './car';
 import type { CarClass } from './cars';
 import { DEFAULT_TUNING, DT, type CarTuning } from './config';
 import { NEUTRAL_INPUT, type CarInput } from './input';
@@ -38,7 +38,11 @@ export class SimWorld {
 
     // The road surface: a static triangle mesh following the track's heights and banking. Cars
     // hover over it on a raycast spring, so normal driving never touches it.
-    this.world.createCollider(RAPIER.ColliderDesc.trimesh(...roadMesh(track)).setFriction(0));
+    this.world.createCollider(
+      RAPIER.ColliderDesc.trimesh(...roadMesh(track))
+        .setFriction(0)
+        .setCollisionGroups((GROUP_ROAD << 16) | 0xffff),
+    );
 
     // One triangle-mesh collider per side, standing on the road edge. Hundreds of separate
     // box colliders cost ~4x more per step, which matters because clients re-simulate
@@ -282,6 +286,7 @@ function roadMesh(track: Track): [Float32Array, Uint32Array] {
 
 /** Extra invisible wall height above the visible wall, so nothing ever goes over the top. */
 const WALL_TOP_MARGIN = 1.5;
+const WALL_TOP_MARGIN_JUMPS = 9;
 
 /**
  * A vertical ribbon along a closed edge loop, from below the road up past the visible wall.
@@ -298,7 +303,8 @@ function wallMesh(edge: Vec3[], track: Track, height: number, facing: 1 | -1): [
   const vertices = new Float32Array(n * 6);
   const indices = new Uint32Array(n * 6);
   edge.forEach((p, i) => {
-    const top = Math.max(p.y, track.samples[i].y) + height + WALL_TOP_MARGIN;
+    // Jump tracks get tall invisible walls, so a car in the air can't sail out of the circuit.
+    const top = Math.max(p.y, track.samples[i].y) + height + (track.def.jumps ? WALL_TOP_MARGIN_JUMPS : WALL_TOP_MARGIN);
     vertices.set([p.x, p.y - 1, p.z, p.x, top, p.z], i * 6);
   });
   for (let i = 0; i < n; i++) {

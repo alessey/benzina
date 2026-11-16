@@ -9,6 +9,8 @@ export const DT = 1 / TICK_RATE;
 export interface CarTuning {
   /** Downward gravity, m/s². Higher than real life keeps cars planted and snappy. */
   gravity: number;
+  /** Fraction of gravity felt in the air (below 1 = arcade hang time off jumps). */
+  airGravity: number;
   /** Top forward speed, m/s. */
   maxSpeed: number;
   /** Forward acceleration from standstill, m/s². Tapers toward zero at maxSpeed. */
@@ -76,6 +78,7 @@ export interface CarTuning {
 
 export const DEFAULT_TUNING: CarTuning = {
   gravity: 25,
+  airGravity: 0.6,
   maxSpeed: 45,
   accel: 22,
   brakeDecel: 40,

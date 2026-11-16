@@ -7,6 +7,10 @@ import { type CarState, yawOf, yawQuat } from './state';
 import { nearestSampleIndex, nearestSampleIndexNear, rightOf, roadHeightAt, type Track } from './track';
 
 const FALL_RESET_Y = -10;
+/** Collision group bits: membership in the high 16 bits, what we collide with in the low 16. */
+export const GROUP_ROAD = 0x0002;
+const GROUP_CAR = 0x0004;
+const CAR_COLLISION_GROUPS = (GROUP_CAR << 16) | (0xffff & ~GROUP_ROAD);
 /** Fastest a car may rise away from the road while its wheels are on it, beyond the road's own rise (m/s). */
 const MAX_HOP_SPEED = 3;
 /** How far the road can fall away (m) before the car stops counting as on the ground. */
@@ -97,6 +101,9 @@ export class Car {
       CAR_SHAPE.borderRadius,
     )
       .setDensity(CAR_SHAPE.density * CLASS_SPECS[carClass].mass)
+      // Cars hover on their suspension ray; the body never touches the road surface (steep ramps
+      // would otherwise catch a level car's corners), only walls, the ground and other cars.
+      .setCollisionGroups(CAR_COLLISION_GROUPS)
       .setFriction(0)
       .setFrictionCombineRule(RAPIER.CoefficientCombineRule.Min)
       .setRestitution(0.2);
@@ -143,13 +150,12 @@ export class Car {
 
     this.steer = approach(this.steer, clamp(input.steer, -1, 1), t.steerSpeed * dt);
 
+    // Look further down when falling fast, so a hard landing is caught before the car passes
+    // through the road (the body no longer collides with the road surface).
+    const reach = CAR_RIDE_HEIGHT + SUSPENSION_TRAVEL;
     const ray = new RAPIER.Ray(pos, { x: 0, y: -1, z: 0 });
-    const hit = this.world.castRay(
-      ray,
-      CAR_RIDE_HEIGHT + SUSPENSION_TRAVEL,
-      true,
-      RAPIER.QueryFilterFlags.EXCLUDE_DYNAMIC,
-    );
+    const far = this.world.castRay(ray, Math.max(reach, CAR_RIDE_HEIGHT - v.y * dt * 2 + 0.2), true, RAPIER.QueryFilterFlags.EXCLUDE_DYNAMIC);
+    const hit = far && far.timeOfImpact <= reach ? far : null;
     let vy = v.y;
 
     const w = this.body.angvel();
@@ -178,7 +184,21 @@ export class Car {
       // Nothing launches a car off the road faster than the road itself rises (plus a little):
       // ramps still fling you (that's roadVy), but a car squeezed into the road surface in a
       // crash gets eased out instead of being shot into the air by the contact solver.
-      if (this.grounded) vy = Math.min(vy, roadVy + MAX_HOP_SPEED);
+      // The road's rise is measured at the nearest sample, which reads flat right on a jump
+      // lip; take the steepest rise of the neighbouring samples too, so the lip still launches.
+      if (this.grounded) vy = Math.min(vy, this.maxRoadRise(v.x, v.z) + MAX_HOP_SPEED);
+    } else {
+      // In the air: a little arcade hang time (part of gravity is cancelled).
+      vy += t.gravity * (1 - t.airGravity) * dt;
+    }
+    if (far) {
+      // Landing guard: never end this tick deeper than the bump-stop, however fast we fall.
+      this.sampleHint = nearestSampleIndexNear(this.track, pos.x, pos.z, this.sampleHint);
+      const under = this.track.samples[this.sampleHint];
+      const roadVy = under.slope * (v.x * under.tx + v.z * under.tz);
+      const room = far.timeOfImpact - (CAR_RIDE_HEIGHT - BUMP_STOP);
+      const fallNext = (vy - roadVy - t.gravity * dt) * dt;
+      if (fallNext < -room) vy = roadVy + t.gravity * dt - Math.max(0, room) / dt;
     }
 
     this.puddle = false;
@@ -335,6 +355,17 @@ export class Car {
    * Ended up under an elevated road (squeezed through it in a crash)? Only checked on the
    * circuit itself; off it there's no road above to be under.
    */
+  /** Steepest road rise (m/s at our velocity) over the nearest sample and its neighbours. */
+  private maxRoadRise(vx: number, vz: number): number {
+    const n = this.track.samples.length;
+    let best = -Infinity;
+    for (const d of [-1, 0, 1]) {
+      const s = this.track.samples[(this.sampleHint + d + n) % n];
+      best = Math.max(best, s.slope * (vx * s.tx + vz * s.tz));
+    }
+    return best;
+  }
+
   private belowRoad(x: number, y: number, z: number): boolean {
     this.sampleHint = nearestSampleIndexNear(this.track, x, z, this.sampleHint);
     const s = this.track.samples[this.sampleHint];

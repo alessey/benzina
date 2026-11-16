@@ -3,6 +3,7 @@ import { DEFAULT_TUNING, type CarTuning } from '@benzina/shared';
 
 const RANGES: Record<keyof CarTuning, [number, number, number]> = {
   gravity: [5, 60, 0.5],
+  airGravity: [0.3, 1, 0.05],
   maxSpeed: [10, 90, 1],
   accel: [5, 60, 0.5],
   brakeDecel: [5, 100, 1],

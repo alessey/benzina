@@ -43,8 +43,9 @@ describe.each(TRACKS.map((def) => [def.name, def] as const))('%s', (_name, def) 
         `tightest radius ${minRadius.toFixed(0)} m, max bank ${((Math.max(...track.samples.map((s) => Math.abs(s.bank))) * 180) / Math.PI).toFixed(1)}°, ` +
         `crest air above ${(airborne * 3.6).toFixed(0)} km/h`,
     );
-    // Jump tracks have short steep ramps (cars hover high enough to clear ~22%).
-    expect(maxGrade).toBeLessThan(def.jumps ? 0.2 : 0.12);
+    // Jump tracks have short steep kickers (the car body doesn't collide with the road, so a
+    // level car can't catch a ramp; the hover spring follows it).
+    expect(maxGrade).toBeLessThan(def.jumps ? 0.32 : 0.12);
     expect(minRadius).toBeGreaterThan(14);
     expect(Math.min(...track.samples.map((s) => s.y))).toBeGreaterThanOrEqual(0);
     // Both edges stay above ground even on banked corners (else the ground covers the road).
