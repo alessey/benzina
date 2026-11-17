@@ -29,9 +29,8 @@ const WHEELS_DOWN_SLACK = 0.12;
 const BUMP_STOP = HOVER_CLEARANCE * 0.6;
 /** Below this speed (m/s) yaw stability returns in full, so spins always wind down. */
 const SPIN_FADE_SPEED = 20;
-/** How fast `upset` fades (per second) once the tyres grip again, and while still sliding. */
+/** How fast `upset` fades (per second) once the tyres grip again (sliding: `tuning.spinRecovery`). */
 const UPSET_FADE_GRIPPING = 0.8;
-const UPSET_FADE_SLIDING = 0.15;
 /** Within this distance of a wall (m), steering away from it isn't limited by cornering grip. */
 const WALL_NEAR = 2.5;
 /** Closer than this to a wall (metres) counts as touching it. */
@@ -285,7 +284,7 @@ export class Car {
       const tyre = 1 - this.upset * slide * (1 - t.tireSlideGrip);
       this.slip = slip;
       this.tyre = tyre;
-      this.upset = Math.max(0, this.upset - dt * (slide < 0.2 ? UPSET_FADE_GRIPPING : UPSET_FADE_SLIDING));
+      this.upset = Math.max(0, this.upset - dt * (slide < 0.2 ? UPSET_FADE_GRIPPING : t.spinRecovery));
 
       const speed = Math.abs(vF);
       const lowSpeedFactor = clamp(speed / t.steerFullSpeed, 0, 1);

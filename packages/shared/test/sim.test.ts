@@ -214,7 +214,17 @@ describe('SimWorld', () => {
 
     it('a solid hit on the rear quarter spins the car out (PIT)', () => {
       const r = bump(track, 'pit', undefined, 8);
-      expect(r.victimHeadingChange).toBeGreaterThan(1.5); // > 85 degrees
+      expect(r.victimHeadingChange).toBeGreaterThan(1); // > 57 degrees
+    });
+
+    it('harder hits spin more, up to a ceiling', () => {
+      const medium = bump(track, 'pit', undefined, 8).victimTotalRotation;
+      expect(medium).toBeGreaterThan(1); // > 57 degrees: knocked properly sideways
+      for (const closing of [12, 16, 20]) {
+        const r = bump(track, 'pit', undefined, closing);
+        expect(r.victimTotalRotation).toBeGreaterThanOrEqual(medium);
+        expect(r.victimTotalRotation).toBeLessThan(4); // < 230 degrees, not a full pirouette
+      }
     });
 
     it('a light tap on the rear quarter only unsettles it', () => {

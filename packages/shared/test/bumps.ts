@@ -20,6 +20,8 @@ export interface BumpReport {
   contactTicks: number;
   /** 3 s after impact: victim's yaw rate (rad/s) and tyre grip fraction. Recovered = ~0 and ~1. */
   victimYawRateLater: number;
+  /** Victim's total rotation after impact (rad, unwrapped, to the end of the run). */
+  victimTotalRotation: number;
   victimTyreLater: number;
 }
 
@@ -105,7 +107,9 @@ export function bump(
     contactTicks: 0,
     victimYawRateLater: 0,
     victimTyreLater: 1,
+    victimTotalRotation: 0,
   };
+  let rotation = 0;
   const yawOfCar = (c: Car) => 2 * Math.atan2(c.body.rotation().y, c.body.rotation().w);
 
   for (let t = 0; t < 300; t++) {
@@ -125,6 +129,11 @@ export function bump(
         attackerSpeedAtImpact = before.a;
         headingAtImpact = before.h;
       }
+    }
+    if (impactTick >= 0) {
+      const d = yawOfCar(victim) - before.h;
+      rotation += Math.atan2(Math.sin(d), Math.cos(d));
+      report.victimTotalRotation = Math.abs(rotation);
     }
     if (impactTick >= 0 && t - impactTick <= 60) {
       report.victimLateral = Math.max(report.victimLateral, Math.abs(lateralOf(victim)));

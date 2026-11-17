@@ -160,8 +160,8 @@ export class SimWorld {
             ((1 + BUMP_RESTITUTION) * closing) /
             (1 / a.m + 1 / b.m + raCrossN ** 2 / (a.m * CAR_INERTIA) + rbCrossN ** 2 / (b.m * CAR_INERTIA));
           // a receives +j·n, b receives −j·n.
-          const dwa = (t.bumpSpin * raCrossN * j) / (a.m * CAR_INERTIA);
-          const dwb = (-t.bumpSpin * rbCrossN * j) / (b.m * CAR_INERTIA);
+          const dwa = softCap((t.bumpSpin * raCrossN * j) / (a.m * CAR_INERTIA), t.bumpSpinMax);
+          const dwb = softCap((-t.bumpSpin * rbCrossN * j) / (b.m * CAR_INERTIA), t.bumpSpinMax);
           a.w += dwa;
           b.w += dwb;
           // A hard twist unsettles the car, letting tyre saturation turn it into a spin.
@@ -215,6 +215,17 @@ const CAR_CONTACT_GAP = 0.05;
 const BUMP_RESTITUTION = 0.3;
 /** Yaw-rate kick (rad/s) from a hit that fully unsettles a car. */
 const UPSET_PER_SPIN = 2;
+
+/**
+ * Hard hits twist less than proportionally: kicks up to 75% of `max` pass through unchanged,
+ * larger ones ease toward `max` (never past it).
+ */
+export function softCap(dw: number, max: number): number {
+  const knee = 0.75 * max;
+  const mag = Math.abs(dw);
+  if (max <= 0 || mag <= knee) return dw;
+  return Math.sign(dw) * (knee + (max - knee) * Math.tanh((mag - knee) / (max - knee)));
+}
 /** Yaw moment of inertia per unit mass of a solid 2 m × 4 m box: (w² + l²) / 12. */
 const CAR_INERTIA = ((2 * HALF_W) ** 2 + (2 * HALF_L) ** 2) / 12;
 

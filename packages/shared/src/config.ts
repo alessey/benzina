@@ -68,6 +68,13 @@ export interface CarTuning {
    * A tap on the rear quarter turns a car; a centred rear-end hit doesn't.
    */
   bumpSpin: number;
+  /** Ceiling on the spin one hit can add (rad/s); hard hits ease toward it. 0 = no ceiling. */
+  bumpSpinMax: number;
+  /**
+   * How fast a car knocked into a slide gets its grip back (per second) while still sliding.
+   * Higher: spins are caught sooner and end shorter.
+   */
+  spinRecovery: number;
   /** Tyre saturation (applies only while a car is upset by a hit). Slip angle (rad) of full grip. */
   tireSlipPeak: number;
   /** Slip angle (rad) at which tyres are fully sliding. */
@@ -103,7 +110,9 @@ export const DEFAULT_TUNING: CarTuning = {
   wallPushOff: 3.5,
   bumpSeparation: 3,
   bumpDeflect: 4,
-  bumpSpin: 2,
+  bumpSpin: 1.8,
+  bumpSpinMax: 5,
+  spinRecovery: 0.75,
   tireSlipPeak: 0.1,
   tireSlipFull: 0.35,
   tireSlideGrip: 0.15,

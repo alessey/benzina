@@ -29,6 +29,8 @@ const RANGES: Record<keyof CarTuning, [number, number, number]> = {
   bumpSeparation: [0, 10, 0.1],
   bumpDeflect: [0, 15, 0.5],
   bumpSpin: [0, 3, 0.05],
+  bumpSpinMax: [0, 10, 0.1],
+  spinRecovery: [0, 3, 0.05],
   tireSlipPeak: [0.02, 0.6, 0.01],
   tireSlipFull: [0.1, 1.5, 0.01],
   tireSlideGrip: [0.05, 1, 0.01],
