@@ -45,14 +45,17 @@ describe('weather', () => {
   it('rain is slower for every class on every track, by a noticeable but fair margin', () => {
     const slowdowns: Record<CarClass, number[]> = { equilibrio: [], bolide: [], scatto: [], artiglio: [] };
     for (const def of TRACKS) {
+      let puddleTicks = 0;
       for (const cls of CAR_CLASSES) {
         const dry = lap(def, cls, 'clear');
         const wet = lap(def, cls, 'rain');
         slowdowns[cls].push(wet.time / dry.time - 1);
-        // Channels are ice (no puddles); every other track has some on the racing line.
-        if (def.pipe) expect(wet.puddleTicks).toBe(0);
-        else expect(wet.puddleTicks).toBeGreaterThan(0);
+        puddleTicks += wet.puddleTicks;
       }
+      // Channels are ice (no puddles); every other track has some on the racing line (each
+      // class's line differs a little, so not every car hits one every lap).
+      if (def.pipe) expect(puddleTicks).toBe(0);
+      else expect(puddleTicks).toBeGreaterThan(0);
     }
     const avg = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length;
     // The grip car copes best with the wet; the fast, loose one worst.

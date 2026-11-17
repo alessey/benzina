@@ -36,7 +36,7 @@ URL options:
 |---|---|
 | `?room=CODE` | invite link: pre-fills the code on the start screen |
 | `?offline&bots=N` | skip the menu: offline practice/race against N bots |
-| `?track=ID` | track for offline play and the menu backdrop (`circuito`, `colline`, `serpente`, `salto`, `porto`, `canalone`) |
+| `?track=ID` | track for offline play and the menu backdrop (`circuito`, `colline`, `serpente`, `salto`, `porto`, `canalone`, `autodromo`) |
 | `?weather=W` | weather for offline play (`clear`, `overcast`, `rain`, `fog`, `dusk`) |
 | `?autojoin` (+`room`, `name`, `bots`) | skip the menu and join (used by automated tests) |
 | `?bot` | autopilot drives your car |
@@ -64,7 +64,8 @@ packages/
     input.ts    CarInput, the per-tick controls (this is what clients will send)
     track.ts    tracks from a closed spline with heights → centre line, slope, banking, edges, walls,
                 and optional U-shaped channel profile (bobsled run)
-    tracks.ts   the circuits (Circuito Uno, Colline, Il Serpente, Il Salto, Porto Azzurro, Canalone)
+    tracks.ts   the circuits (Circuito Uno, Colline, Il Serpente, Il Salto, Porto Azzurro, Canalone,
+                Autodromo)
     car.ts      arcade car controller (one rigid body, roll/pitch locked)
     world.ts    SimWorld: physics world + track + cars, fixed-step `step(inputs)`
     state.ts    CarState snapshot
@@ -87,6 +88,7 @@ packages/
     carRenderer.ts  draws all cars, interpolates ticks, smooths corrections
     debugOverlay.ts netcode stats + server "ghost" boxes
     scene.ts        sky, terrain, road/curbs/walls, trees, mountains, start gantry, grandstand
+    speedway.ts     speedway dressing: grandstands, pits and paddock, catch fencing, light towers
     weatherFx.ts    weather looks (sky, fog, light), wet road reflections, puddles, rain
     carView.ts      procedural cars lofted through cross-sections (60s GT, 80s wedge, muscle, rally hatch)
     effects.ts      skid marks and tyre smoke
@@ -116,6 +118,13 @@ packages/
   works relative to the road's rise under the car, so the car follows hills without lag. Cars
   tilt to the road visually only. Physics walls reach above the visible ones and are measured
   from the road centre, so a level car can't slide over the low side of a banked corner.
+- **Steep banking.** A track can set a bank angle per control point (Autodromo's turns are
+  ~22°) instead of the automatic up-to-10° banking. Those banks are felt: turning toward the low
+  side adds cornering grip (`BANK_GRIP` × g·sin θ), so banked turns can be taken flat out where
+  the same turn flat needs a lift, and a car too slow for the bank slides down it
+  (g·tan θ − v²·curvature). Bots plan corner speeds with the same grip. Steep banks pivot on the
+  inside edge (it stays at ground level, the outside climbs), and cars are held to their surface
+  like in the bobsled channel, so a slide up the bank can't launch them over the wall.
 - **Fixed 60 Hz tick** on both sides; rendering interpolates between ticks.
 
 ### Netcode

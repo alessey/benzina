@@ -3,7 +3,7 @@ import { classTuning } from './cars';
 import { DEFAULT_TUNING, type CarTuning } from './config';
 import type { CarInput } from './input';
 import { yawOf } from './state';
-import { nearestSampleIndex, pipeOffsetForSlope, rightOf, type Track } from './track';
+import { bankGrip, nearestSampleIndex, pipeOffsetForSlope, rightOf, type Track } from './track';
 
 export type BotDifficulty = 'easy' | 'normal' | 'hard';
 
@@ -98,11 +98,17 @@ export function botInput(
   const t = classTuning(baseTuning, car.carClass);
   const here = nearestSampleIndex(track, p.x, p.z);
   const horizon = Math.round((20 + Math.abs(speed) * 1.6) / spacing);
-  let tightest = 0;
-  for (let k = 2; k <= horizon; k++) tightest = Math.max(tightest, Math.abs(track.samples[(here + k) % n].curvature));
-  // Channel walls bank the corners: they add up to gravity × sin(wall angle) of grip.
+  // Channel walls bank the corners: they add up to gravity × sin(wall angle) of grip. Steeply
+  // banked turns add grip per sample (bankGrip), so the slowest point decides.
   const bank = track.def.pipe ? t.gravity * Math.sin(track.def.pipe.angle) * 0.85 : 0;
-  const cornerSpeed = tightest > 0 ? Math.sqrt(((t.cornerGrip + bank) * profile.corner) / tightest) : Infinity;
+  let cornerSpeed = Infinity;
+  for (let k = 2; k <= horizon; k++) {
+    const i = (here + k) % n;
+    const c = track.samples[i].curvature;
+    if (c === 0) continue;
+    const grip = t.cornerGrip + bank + bankGrip(track, i, c, t.gravity);
+    cornerSpeed = Math.min(cornerSpeed, Math.sqrt((grip * profile.corner) / Math.abs(c)));
+  }
   // Proportional: brake harder the more we're over the corner speed (smooth inputs also keep
   // other players' predictions of this car accurate).
   let throttle = Math.max(-1, Math.min(profile.throttle, (cornerSpeed - speed) / 4));

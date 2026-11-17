@@ -16,6 +16,12 @@ export interface Vec3 extends Vec2 {
 export interface ControlPoint extends Vec2 {
   /** Road height, metres (0 = ground level). Must stay >= 0. */
   y?: number;
+  /**
+   * Bank angle here, degrees; positive raises the left edge (right-hand turns), negative the
+   * right. Set on any point and the track's banking comes only from these (eased between
+   * points), steep enough to be felt: a banked turn holds the car in.
+   */
+  bank?: number;
 }
 
 export interface TrackDef {
@@ -33,8 +39,8 @@ export interface TrackDef {
   banking?: number;
   /** The track has jumps: steeper ramps and airtime are intended (relaxes validation). */
   jumps?: boolean;
-  /** Scenery style: open countryside (default) or a city street circuit. */
-  scenery?: 'country' | 'city' | 'snow';
+  /** Scenery style: open countryside (default), a city street circuit, snow, a speedway. */
+  scenery?: 'country' | 'city' | 'snow' | 'speedway';
   /** A covered section, from one control point to another (indices into controlPoints). */
   tunnel?: [number, number];
   /**
@@ -134,6 +140,25 @@ export interface Track {
   bounds: { minX: number; maxX: number; minZ: number; maxZ: number; maxY: number };
   /** Covered section as sample indices [from, to] in driving order (may wrap), or null. */
   tunnel: [number, number] | null;
+  /** Banking is set per turn (ControlPoint.bank) and the physics feels it. */
+  steepBanks: boolean;
+}
+
+/**
+ * Banked turns: extra cornering grip, as a multiple of the bank's share of gravity
+ * (g·sin θ), when turning toward the low side. Arcade-strong, so banked turns can be taken
+ * flat out where flat ones of the same radius need a lift.
+ */
+export const BANK_GRIP = 1.6;
+
+/**
+ * Extra cornering grip (m/s²) a track's bank gives at sample `i`, turning toward its low
+ * side (`turn` > 0: right). Only tracks with per-turn banking (`steepBanks`).
+ */
+export function bankGrip(track: Track, i: number, turn: number, gravity: number): number {
+  if (!track.steepBanks) return 0;
+  const b = track.samples[i].bank;
+  return b * turn > 0 ? gravity * Math.sin(Math.abs(b)) * BANK_GRIP : 0;
 }
 
 /** Distance between centre line samples, metres. */
@@ -177,6 +202,8 @@ export function buildTrack(def: TrackDef): Track {
   const cp = def.controlPoints;
   const n = cp.length;
   const dense: Vec3[] = [];
+  const steepBanks = cp.some((c) => c.bank !== undefined);
+  const denseBank: number[] = [];
   const perSegment = Math.max(def.samplesPerSegment, 8) * 4;
   for (let i = 0; i < n; i++) {
     const p0 = cp[(i - 1 + n) % n];
@@ -190,6 +217,9 @@ export function buildTrack(def: TrackDef): Track {
         z: catmullRom(p0.z, p1.z, p2.z, p3.z, t),
         y: Math.max(0, catmullRom(p0.y ?? 0, p1.y ?? 0, p2.y ?? 0, p3.y ?? 0, t)),
       });
+      // Eased (smoothstep) between points, so a bank never overshoots like the spline can.
+      const e = t * t * (3 - 2 * t);
+      denseBank.push((((p1.bank ?? 0) * (1 - e) + (p2.bank ?? 0) * e) * Math.PI) / 180);
     }
   }
   const cumulative = [0];
@@ -201,6 +231,7 @@ export function buildTrack(def: TrackDef): Track {
   const total = cumulative[dense.length];
   const sampleCount = Math.max(16, Math.round(total / SAMPLE_SPACING));
   const points: Vec3[] = [];
+  const authoredBank: number[] = [];
   let k = 0;
   for (let i = 0; i < sampleCount; i++) {
     const target = (i / sampleCount) * total;
@@ -209,6 +240,7 @@ export function buildTrack(def: TrackDef): Track {
     const b = dense[(k + 1) % dense.length];
     const f = (target - cumulative[k]) / Math.max(1e-9, cumulative[k + 1] - cumulative[k]);
     points.push({ x: a.x + (b.x - a.x) * f, y: a.y + (b.y - a.y) * f, z: a.z + (b.z - a.z) * f });
+    authoredBank.push(denseBank[k] + (denseBank[(k + 1) % dense.length] - denseBank[k]) * f);
   }
 
   const count = points.length;
@@ -232,22 +264,26 @@ export function buildTrack(def: TrackDef): Track {
     const a = tangents[(i - 1 + count) % count];
     const b = tangents[(i + 1) % count];
     const ds = Math.hypot(points[(i + 1) % count].x - points[(i - 1 + count) % count].x, points[(i + 1) % count].z - points[(i - 1 + count) % count].z);
-    const cross = a.z * b.x - a.x * b.z;
+    const cross = a.x * b.z - a.z * b.x;
     return ds > 0 ? Math.asin(Math.max(-1, Math.min(1, cross))) / ds : 0;
   });
   const curvature = smooth(rawCurvature, 4);
   const banking = def.banking ?? 0;
-  const bank = smooth(
-    curvature.map((c) => banking * Math.max(-MAX_BANK, Math.min(MAX_BANK, c * BANK_GAIN))),
-    6,
-  );
+  const bank = steepBanks
+    ? smooth(authoredBank, 5)
+    : smooth(
+        curvature.map((c) => banking * Math.max(-MAX_BANK, Math.min(MAX_BANK, c * BANK_GAIN))),
+        6,
+      );
 
   // Banking lowers the inside edge below the centre line. Where the track is near ground level
   // that would put the edge underground (below the physics ground, and under the scenery's
   // ground plane), so lift the road there, smoothly, until both edges sit at or above y = 0.
   const hw = def.width / 2;
   const needed = points.map((p, i) => Math.max(0, hw * Math.sin(Math.abs(bank[i])) + EDGE_CLEARANCE - p.y));
-  const lift = smooth(needed, 12).map((v, i) => Math.max(v, needed[i]));
+  // Steep banks pivot on the inside edge, like a real banked turn: it stays at ground level and
+  // only the outside climbs. (The bank itself is eased in, so this lift is smooth too.)
+  const lift = steepBanks ? needed : smooth(needed, 12).map((v, i) => Math.max(v, needed[i]));
   points.forEach((p, i) => (p.y += lift[i]));
 
   const samples: TrackSample[] = points.map((p, i) => {
@@ -305,7 +341,7 @@ export function buildTrack(def: TrackDef): Track {
   };
   const tunnel: [number, number] | null = def.tunnel ? [nearest(cp[def.tunnel[0]]), nearest(cp[def.tunnel[1]])] : null;
 
-  return { def, samples, length, leftEdge, rightEdge, walls, bounds, tunnel };
+  return { def, samples, length, leftEdge, rightEdge, walls, bounds, tunnel, steepBanks };
 }
 
 /** One box per edge segment, pushed outward by half the wall thickness, slightly overlapping. */

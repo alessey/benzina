@@ -1,3 +1,4 @@
+import { buildSpeedway } from './speedway';
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { crossSection, nearestSampleIndex, rightOf, roadPoint, type Track, type Vec3, type Weather } from '@benzina/shared';
@@ -196,7 +197,7 @@ export function createScene(opts: SceneOptions): GameScene {
       trackGroup = buildTrackScenery(track, terrain);
       lights = new StartLights(track);
       trackGroup.add(lights.group);
-      trackGroup.add(buildGrandstand(track, terrain));
+      if (track.def.scenery !== 'speedway') trackGroup.add(buildGrandstand(track, terrain));
       const puddles = buildPuddles(track, puddleMat);
       if (puddles) {
         puddles.name = 'puddles';
@@ -308,14 +309,26 @@ class Terrain {
         const clamped = Math.max(-hw, Math.min(hw, across));
         // (A bobsled channel stands on ground at its floor level, walls and all: the terrain
         // grid is too coarse to follow its curved walls without cutting through them.)
-        const nearRoad = s.y - Math.tan(s.bank) * clamped - 0.45;
+        // Under a steeply banked turn the road surface curves around the corner while the coarse
+        // terrain triangles cut straight across it, so they'd poke through near the edges: sink
+        // the ground under the road a little more the steeper the bank (hidden by the road).
+        const sink = track.steepBanks ? Math.tan(Math.abs(s.bank)) * 3 * (1 - smoothstep(hw - 0.5, hw + 0.5, Math.abs(across))) : 0;
+        const nearRoad = s.y - Math.tan(s.bank) * clamped - 0.45 - sink;
         // Edges of the terrain fade down to the far ground plane.
         const edge = Math.min(c, r, this.cols - 1 - c, this.rows - 1 - r) * cell;
         const fade = smoothstep(0, 120, edge);
         const wet = inWater(track, x, z);
         // Countryside rolls; a city climbs the hillside with its streets; the harbour is deep.
         const scenery = track.def.scenery;
-        const land = scenery === 'city' ? s.y * 0.9 : scenery === 'snow' ? s.y * 0.85 + this.hills(x, z) * 1.6 : this.hills(x, z);
+        // A speedway sits on flat, levelled ground; the hills start well away from it.
+        const land =
+          scenery === 'city'
+            ? s.y * 0.9
+            : scenery === 'snow'
+              ? s.y * 0.85 + this.hills(x, z) * 1.6
+              : scenery === 'speedway'
+                ? this.hills(x, z) * smoothstep(90, 260, d)
+                : this.hills(x, z);
         const natural = wet ? WATER_FLOOR : land * fade + FAR_GROUND_Y * (1 - fade);
         // At the water's edge the land drops sharply (a quay wall) instead of a long bank.
         const w = wet ? smoothstep(hw + 2, hw + 9, d) : smoothstep(hw + 4, hw + 50, d);
@@ -366,6 +379,7 @@ class Terrain {
       country: [0x6f9a45, 0x587f36, 0x9a8a62],
       city: [0xbdb4a2, 0xa69d8b, 0x8c8a86],
       snow: [0xf2f5f8, 0xdbe4ec, 0xcdd7e0],
+      speedway: [0x74a64a, 0x669a40, 0x9a8a62],
     }[scenery];
     const grass = new THREE.Color(palette[0]);
     const grassDark = new THREE.Color(palette[1]);
@@ -408,6 +422,7 @@ function buildTrackScenery(track: Track, terrain: Terrain): THREE.Group {
   } else {
     group.add(buildTrees(track, terrain));
   }
+  if (track.def.scenery === 'speedway') group.add(buildSpeedway(track, (x, z) => terrain.heightAt(x, z)));
   for (const water of buildWater(track)) group.add(water);
   const tunnel = buildTunnel(track);
   if (tunnel) group.add(tunnel);
@@ -420,7 +435,7 @@ function buildTrackScenery(track: Track, terrain: Terrain): THREE.Group {
 /** Flat ground beyond the terrain, out to the fog. */
 function buildFarGround(track: Track): THREE.Mesh {
   const b = track.bounds;
-  const color = track.def.scenery === 'city' ? 0xb3aa98 : track.def.scenery === 'snow' ? 0xe9eef2 : 0x6a9442;
+  const color = track.def.scenery === 'city' ? 0xb3aa98 : track.def.scenery === 'snow' ? 0xe9eef2 : track.def.scenery === 'speedway' ? 0x6c9c44 : 0x6a9442;
   const mesh = new THREE.Mesh(new THREE.PlaneGeometry(6000, 6000), new THREE.MeshLambertMaterial({ color }));
   mesh.rotation.x = -Math.PI / 2;
   mesh.position.set((b.minX + b.maxX) / 2, FAR_GROUND_Y, (b.minZ + b.maxZ) / 2);
@@ -712,7 +727,8 @@ function buildTrees(track: Track, terrain: Terrain): THREE.Group {
   const maxX = b.maxX + 160;
   const minZ = b.minZ - 160;
   const maxZ = b.maxZ + 160;
-  const clearance = track.def.width / 2 + 8;
+  // Keep a speedway's stands, pits and light towers clear of trees.
+  const clearance = track.def.width / 2 + (track.def.scenery === 'speedway' ? 75 : 8);
 
   const spots: { x: number; y: number; z: number; s: number; round: boolean }[] = [];
   for (let tries = 0; spots.length < 340 && tries < 8000; tries++) {

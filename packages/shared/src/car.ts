@@ -4,7 +4,7 @@ import { CLASS_SPECS, classTuning, type CarClass } from './cars';
 import { PUDDLE, surfaceTuning, type Weather } from './weather';
 import type { CarInput } from './input';
 import { type CarState, yawOf, yawQuat } from './state';
-import { nearestSampleIndex, nearestSampleIndexNear, profileHeight, profileSlope, rightOf, roadHeightAt, type Track } from './track';
+import { bankGrip, nearestSampleIndex, nearestSampleIndexNear, profileHeight, profileSlope, rightOf, roadHeightAt, type Track } from './track';
 
 const FALL_RESET_Y = -10;
 /** Bobsled channels: how strongly cornering swings a car outward, up the wall (0..1). */
@@ -15,6 +15,8 @@ const PIPE_HOLD = 12;
 const PIPE_REACH = 1.5;
 /** Bobsled channels: fastest height correction toward the ice (m/s), so it never launches. */
 const PIPE_HOLD_MAX = 3;
+/** Steeply banked track steeper than this (rad, ~5°) holds the car to its surface. */
+const BANK_HOLD_ANGLE = 0.09;
 /** Bobsled channels: the suspension ray starts this far above the car (m). */
 const PIPE_RAY_LIFT = 2;
 /** Collision group bits: membership in the high 16 bits, what we collide with in the low 16. */
@@ -189,7 +191,12 @@ export class Car {
       // Suspension can only push: when the road drops away faster than gravity pulls the car
       // down (a jump lip, a sharp crest), there's no force at all and the car flies.
       const support = t.gravity + t.suspensionStiffness * compression - t.suspensionDamping * (vy - roadVy);
-      if (this.track.def.pipe) {
+      // Steeply banked: held to the surface like the channel below, or a car sliding up the bank
+      // keeps the road's rise as upward speed once grip stops the slide, and takes off.
+      const onBank = this.track.steepBanks && Math.abs(this.track.samples[this.sampleHint].bank) > BANK_HOLD_ANGLE;
+      if (onBank) {
+        vy = roadVy + clamp(compression * PIPE_HOLD, -PIPE_HOLD_MAX, PIPE_HOLD_MAX) + t.gravity * dt;
+      } else if (this.track.def.pipe) {
         // Bobsled channel: the car is held to the ice, following the curved walls exactly as it
         // swings up and back down (a hover spring alone would fling it off the top of a swing).
         // Gravity is added back because Rapier applies it during the step.
@@ -207,7 +214,7 @@ export class Car {
       // crash gets eased out instead of being shot into the air by the contact solver.
       // The road's rise is measured at the nearest sample, which reads flat right on a jump
       // lip; take the steepest rise of the neighbouring samples too, so the lip still launches.
-      if (this.grounded) vy = Math.min(vy, this.maxRoadRise(v.x, v.z) + this.wallRise(pos.x, pos.z, v.x, v.z) + (this.track.def.pipe ? 0.5 : MAX_HOP_SPEED));
+      if (this.grounded) vy = Math.min(vy, this.maxRoadRise(v.x, v.z) + this.wallRise(pos.x, pos.z, v.x, v.z) + (this.track.def.pipe || onBank ? 0.5 : MAX_HOP_SPEED));
     } else {
       // In the air: a little arcade hang time (part of gravity is cancelled).
       vy += t.gravity * (1 - t.airGravity) * dt;
@@ -270,6 +277,17 @@ export class Car {
         vL += PIPE_SWING * vF * yawRate * dt;
       }
 
+      // Steeply banked turns: too slow for the bank and gravity slides the car down it, toward
+      // the inside. At speed the turn's cornering force balances it (g·tan θ = v²·curvature).
+      if (this.track.steepBanks && sample.bank !== 0) {
+        const pull = Math.max(0, t.gravity * Math.tan(Math.abs(sample.bank)) - vF * vF * Math.abs(sample.curvature));
+        // Downhill is toward the right when the left edge is raised.
+        const down = Math.sign(sample.bank) * pull * dt;
+        const r = rightOf(sample.tx, sample.tz);
+        vF += down * (fx * r.x + fz * r.z);
+        vL += down * (rx * r.x + rz * r.z);
+      }
+
       // Tyre saturation: past the peak slip angle, grip and steering authority fall away, so
       // a hard hit turns into a slide or spin you have to catch. Slip is measured at the rear
       // axle: in normal cornering the car pivots there (no slip), but when the tail is knocked
@@ -299,7 +317,9 @@ export class Car {
       // grip limit never leaves you stuck along an outside wall.
       const wallEscape = wall.near !== 0 && wall.near * this.steer < 0;
       // A wall rising on the outside of the turn holds the car in, like a banked corner.
-      const bankHelp = ps * targetYawRate * Math.sign(vF) < 0 ? 0 : t.gravity * Math.sin(Math.atan(Math.abs(ps)));
+      const bankHelp =
+        (ps * targetYawRate * Math.sign(vF) < 0 ? 0 : t.gravity * Math.sin(Math.atan(Math.abs(ps)))) +
+        bankGrip(this.track, this.sampleHint, -targetYawRate * Math.sign(vF), t.gravity);
       const maxCornerYaw = (t.cornerGrip * (input.handbrake || wallEscape ? 1.6 : 1) + bankHelp) / Math.max(4, Math.abs(vF));
       targetYawRate = clamp(targetYawRate, -maxCornerYaw, maxCornerYaw);
       // Pointed into the wall? Turn parallel to it so the car glances off instead of pinning.
@@ -368,7 +388,8 @@ export class Car {
     const fDotR = fx * r.x + fz * r.z;
     const carRightDotR = -fz * r.x + fx * r.z;
     const reach = HALF_L * Math.abs(fDotR) + HALF_W * Math.abs(carRightDotR);
-    const halfRoad = this.track.def.width / 2;
+    // Banked, the road's full width is measured along the slope: less of it across the ground.
+    const halfRoad = (this.track.def.width / 2) * Math.cos(s.bank);
 
     // Only near the road edge: a car somehow beyond the walls (or in a test arena off the
     // circuit) isn't scraping anything.
@@ -394,13 +415,26 @@ export class Car {
     return profileSlope(this.track.def, (x - s.x) * r.x + (z - s.z) * r.z);
   }
 
-  /** How fast a pipe wall rises under us (m/s) as we move across it. */
+  /**
+   * How fast a pipe wall, or a steeply banked road, rises under us (m/s) as we move across it.
+   */
   private wallRise(x: number, z: number, vx: number, vz: number): number {
-    const ps = this.wallSlope(x, z);
-    if (ps === 0) return 0;
     const s = this.track.samples[this.sampleHint];
     const r = rightOf(s.tx, s.tz);
-    return ps * (vx * r.x + vz * r.z);
+    let rise = 0;
+    if (this.track.steepBanks) {
+      // Across the bank, and along it as the bank steepens or eases: off the centre line the
+      // surface rises or falls with the bank angle, which the centre line's slope doesn't show.
+      const n = this.track.samples.length;
+      const prev = this.track.samples[(this.sampleHint - 1 + n) % n];
+      const next = this.track.samples[(this.sampleHint + 1) % n];
+      const dTan = (Math.tan(next.bank) - Math.tan(prev.bank)) / ((2 * this.track.length) / n);
+      const lat = (x - s.x) * r.x + (z - s.z) * r.z;
+      rise -= Math.tan(s.bank) * (vx * r.x + vz * r.z) + lat * dTan * (vx * s.tx + vz * s.tz);
+    }
+    const ps = this.wallSlope(x, z);
+    if (ps === 0) return rise;
+    return rise + ps * (vx * r.x + vz * r.z);
   }
 
   /**

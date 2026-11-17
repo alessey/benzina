@@ -248,7 +248,67 @@ export const CANALONE: TrackDef = {
   ],
 };
 
-export const TRACKS: readonly TrackDef[] = [CIRCUITO_UNO, COLLINE, SERPENTE, IL_SALTO, PORTO_AZZURRO, CANALONE];
+/**
+ * Autodromo: a speedway road course. A long front straight past the grandstands, a long
+ * banked right-hander at each end and a banked left onto the infield loop, which twists out to
+ * one side and back.
+ */
+export const AUTODROMO: TrackDef = {
+  ...BASE,
+  id: 'autodromo',
+  name: 'Autodromo',
+  width: 16,
+  scenery: 'speedway',
+  controlPoints: [
+    // Front straight, northward past the grandstands.
+    { x: 0, z: -40, bank: 0 },
+    { x: 0, z: 30, bank: 0 },
+    { x: 0, z: 80, bank: 0 },
+    // Turns 1-2: one long banked right-hander, all the way round.
+    { x: 0, z: 110, bank: 22 },
+    { x: -11.1, z: 136.9, bank: 30 },
+    { x: -38, z: 148, bank: 30 },
+    { x: -64.9, z: 136.9, bank: 30 },
+    { x: -76, z: 110, bank: 22 },
+    // Back straight, southward.
+    { x: -76, z: 70, bank: 0 },
+    { x: -76, z: 40, bank: 0 },
+    // Turn 3: banked left, out to the infield loop.
+    { x: -76, z: 10, bank: -22 },
+    { x: -85.4, z: -12.6, bank: -34 },
+    { x: -108, z: -22, bank: -18 },
+    { x: -160, z: -23, bank: 0 },
+    // Infield loop: long, twisty and flat (the dirt section).
+    { x: -215, z: -23, bank: 0 },
+    { x: -255, z: -46, bank: 0 },
+    { x: -285, z: -48, bank: 0 },
+    { x: -325, z: -68, bank: 0 },
+    { x: -345, z: -105, bank: 0 },
+    { x: -330, z: -140, bank: 0 },
+    { x: -290, z: -150, bank: 0 },
+    { x: -255, z: -128, bank: 0 },
+    { x: -220, z: -120, bank: 0 },
+    { x: -195, z: -145, bank: 0 },
+    { x: -205, z: -180, bank: 0 },
+    { x: -245, z: -195, bank: 0 },
+    { x: -285, z: -205, bank: 0 },
+    { x: -310, z: -235, bank: 0 },
+    { x: -290, z: -268, bank: 0 },
+    { x: -245, z: -272, bank: 0 },
+    { x: -200, z: -255, bank: 0 },
+    { x: -150, z: -246, bank: 0 },
+    { x: -100, z: -245, bank: 0 },
+    { x: -65, z: -245, bank: 0 },
+    // Turn 4: banked right onto the front straight.
+    { x: -32, z: -245, bank: 22 },
+    { x: -9.4, z: -235.6, bank: 34 },
+    { x: 0, z: -213, bank: 22 },
+    { x: 0, z: -170, bank: 0 },
+    { x: 0, z: -105, bank: 0 },
+  ],
+};
+
+export const TRACKS: readonly TrackDef[] = [CIRCUITO_UNO, COLLINE, SERPENTE, IL_SALTO, PORTO_AZZURRO, CANALONE, AUTODROMO];
 export const DEFAULT_TRACK = CIRCUITO_UNO;
 
 export function trackById(id: string | undefined): TrackDef {
