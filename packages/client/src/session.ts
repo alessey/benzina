@@ -181,7 +181,7 @@ export class OfflineSession implements Session {
       const car = this.sim.cars.get(id)!;
       const mine = this.raceLogic.progressOf(id);
       const driving = this.botSettings.catchUp && me !== null && mine !== null ? catchUpProfile(profile, mine - me) : profile;
-      inputs.set(id, frozen ? NEUTRAL_INPUT : botInput(car, this.track, driving, weatherTuning(this.sim.tuning, this.sim.weather), this.sim.tick * DT));
+      inputs.set(id, frozen ? NEUTRAL_INPUT : botInput(car, this.track, driving, weatherTuning(this.sim.tuning, this.sim.weather), this.sim.tick * DT, this.sim.weather));
     }
     this.sim.step(inputs);
     if (this.raceLogic.update(this.sim, this.sim.tick)) this.onChange();

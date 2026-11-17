@@ -73,7 +73,8 @@ packages/
     predictor.ts client prediction + reconciliation (no rendering, no sockets)
     race.ts     race rules: countdown, checkpoints, laps, standings, results (server + offline)
     bot.ts      autopilot, used by tests, server bots and headless bot clients
-    weather.ts  race weather: wet grip in rain, puddles (fixed per track), dry tunnel
+    weather.ts  race weather and surfaces: wet grip in rain, puddles (fixed per track), dry tunnel,
+                dirt sections (loose grip, mud in the rain)
   server/   Node game server
     index.ts       HTTP + WebSocket entry point (/ws, /health)
     lobby.ts       public/private rooms, quick play, join by code, single fixed-rate tick loop
@@ -125,6 +126,11 @@ packages/
   (g·tan θ − v²·curvature). Bots plan corner speeds with the same grip. Steep banks pivot on the
   inside edge (it stays at ground level, the outside climbs), and cars are held to their surface
   like in the bobsled channel, so a slide up the bank can't launch them over the wall.
+- **Dirt.** A track can mark a run of control points as dirt (Autodromo's infield loop). On it the
+  surface tuning (`DIRT`) loosens grip, makes drifting easier and lowers acceleration and top speed;
+  in the rain it's mud (`MUD`), looser and slower again, and there are no puddles on it. Bots
+  scale their corner speeds by the surface. Visually: a brown rutted surface that turns glossy in
+  the rain, earth berms instead of curbs, wooden fencing, hay bales, dust and mud spray, ruts.
 - **Fixed 60 Hz tick** on both sides; rendering interpolates between ticks.
 
 ### Netcode

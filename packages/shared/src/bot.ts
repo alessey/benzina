@@ -2,6 +2,7 @@ import type { Car } from './car';
 import { classTuning } from './cars';
 import { DEFAULT_TUNING, type CarTuning } from './config';
 import type { CarInput } from './input';
+import { surfaceCornerFactor, type Weather } from './weather';
 import { yawOf } from './state';
 import { bankGrip, nearestSampleIndex, pipeOffsetForSlope, rightOf, type Track } from './track';
 
@@ -61,6 +62,8 @@ export function botInput(
   baseTuning: CarTuning = DEFAULT_TUNING,
   /** Time in seconds, drives the wobble so it varies smoothly (per bot via its id). */
   time = 0,
+  /** Race weather: corners on dirt are slower, in mud slower still. */
+  weather: Weather = 'clear',
 ): CarInput {
   const profile: BotProfile = typeof skill === 'number' ? { ...PERFECT_BOT, throttle: skill } : skill;
   const p = car.body.translation();
@@ -106,7 +109,7 @@ export function botInput(
     const i = (here + k) % n;
     const c = track.samples[i].curvature;
     if (c === 0) continue;
-    const grip = t.cornerGrip + bank + bankGrip(track, i, c, t.gravity);
+    const grip = (t.cornerGrip + bank + bankGrip(track, i, c, t.gravity)) * surfaceCornerFactor(track, i, weather);
     cornerSpeed = Math.min(cornerSpeed, Math.sqrt((grip * profile.corner) / Math.abs(c)));
   }
   // Proportional: brake harder the more we're over the corner speed (smooth inputs also keep

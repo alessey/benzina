@@ -327,7 +327,7 @@ export class Room {
       const mine = this.race.progressOf(id);
       const driving =
         this.botSettings.catchUp && leader !== null && mine !== null ? catchUpProfile(profile, mine - leader) : profile;
-      b.lastInput = frozen ? NEUTRAL_INPUT : botInput(car, this.sim.track, driving, weatherTuning(this.sim.tuning, this.sim.weather), this.sim.tick * DT);
+      b.lastInput = frozen ? NEUTRAL_INPUT : botInput(car, this.sim.track, driving, weatherTuning(this.sim.tuning, this.sim.weather), this.sim.tick * DT, this.sim.weather);
       inputs.set(id, b.lastInput);
     }
 

@@ -274,7 +274,7 @@ let lastThrottle = 0;
 function controls(): CarInput {
   const human = input.sample();
   const car = session.localId ? session.sim.cars.get(session.localId) : undefined;
-  const c = AUTOPILOT && car ? { ...botInput(car, session.track, 1, weatherTuning(session.sim.tuning, session.sim.weather)), reset: human.reset } : human;
+  const c = AUTOPILOT && car ? { ...botInput(car, session.track, 1, weatherTuning(session.sim.tuning, session.sim.weather), 0, session.sim.weather), reset: human.reset } : human;
   lastThrottle = Math.abs(c.throttle);
   return c;
 }

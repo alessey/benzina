@@ -250,8 +250,8 @@ export const CANALONE: TrackDef = {
 
 /**
  * Autodromo: a speedway road course. A long front straight past the grandstands, a long
- * banked right-hander at each end and a banked left onto the infield loop, which twists out to
- * one side and back.
+ * banked right-hander at each end and a banked left onto a long, twisty dirt loop out to one
+ * side, with two jumps.
  */
 export const AUTODROMO: TrackDef = {
   ...BASE,
@@ -259,6 +259,8 @@ export const AUTODROMO: TrackDef = {
   name: 'Autodromo',
   width: 16,
   scenery: 'speedway',
+  jumps: true,
+  dirt: [13, 46],
   controlPoints: [
     // Front straight, northward past the grandstands.
     { x: 0, z: -40, bank: 0 },
@@ -277,9 +279,17 @@ export const AUTODROMO: TrackDef = {
     { x: -76, z: 10, bank: -22 },
     { x: -85.4, z: -12.6, bank: -34 },
     { x: -108, z: -22, bank: -18 },
-    { x: -160, z: -23, bank: 0 },
-    // Infield loop: long, twisty and flat (the dirt section).
-    { x: -215, z: -23, bank: 0 },
+    // The dirt starts here. Jump 1: a kicker with a sharp lip and a long landing.
+    { x: -140, z: -23, y: 0, bank: 0 },
+    { x: -151, z: -23, y: 0.6, bank: 0 },
+    { x: -160, z: -23, y: 2.0, bank: 0 },
+    { x: -166, z: -23, y: 3.4, bank: 0 },
+    { x: -170, z: -23, y: 4.0, bank: 0 },
+    { x: -175, z: -23, y: 2.8, bank: 0 },
+    { x: -190, z: -23, y: 2.3, bank: 0 },
+    { x: -205, z: -24, y: 1.2, bank: 0 },
+    { x: -222, z: -27, y: 0.2, bank: 0 },
+    // The dirt loop: long, twisty and flat.
     { x: -255, z: -46, bank: 0 },
     { x: -285, z: -48, bank: 0 },
     { x: -325, z: -68, bank: 0 },
@@ -295,9 +305,18 @@ export const AUTODROMO: TrackDef = {
     { x: -310, z: -235, bank: 0 },
     { x: -290, z: -268, bank: 0 },
     { x: -245, z: -272, bank: 0 },
-    { x: -200, z: -255, bank: 0 },
-    { x: -150, z: -246, bank: 0 },
-    { x: -100, z: -245, bank: 0 },
+    // Jump 2 on the way back.
+    { x: -205, z: -252, y: 0, bank: 0 },
+    { x: -193, z: -250, y: 0.6, bank: 0 },
+    { x: -184, z: -249, y: 2.0, bank: 0 },
+    { x: -178, z: -248.5, y: 3.4, bank: 0 },
+    { x: -174, z: -248, y: 4.0, bank: 0 },
+    { x: -169, z: -248, y: 2.8, bank: 0 },
+    { x: -154, z: -247, y: 2.3, bank: 0 },
+    { x: -139, z: -246, y: 1.2, bank: 0 },
+    { x: -122, z: -245.5, y: 0.2, bank: 0 },
+    // Back onto tarmac.
+    { x: -95, z: -245, y: 0, bank: 0 },
     { x: -65, z: -245, bank: 0 },
     // Turn 4: banked right onto the front straight.
     { x: -32, z: -245, bank: 22 },

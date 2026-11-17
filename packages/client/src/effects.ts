@@ -3,6 +3,12 @@ import { CAR_RIDE_HEIGHT, inTunnel, nearestSampleIndex, nearestSampleIndexNear, 
 
 const MAX_MARKS = 1600;
 const MAX_SMOKE = 700;
+const SMOKE = new THREE.Color(0.85, 0.85, 0.85);
+const SPRAY = new THREE.Color(0.85, 0.87, 0.9);
+const DUST = new THREE.Color(0.74, 0.62, 0.46);
+const MUD = new THREE.Color(0.36, 0.28, 0.2);
+const RUBBER = new THREE.Color(0x111111);
+const RUT = new THREE.Color(0x3b2a1b);
 /** Rear wheel contact points in car space (x across, z along). */
 const REAR_WHEELS: [number, number][] = [
   [-0.88, -1.28],
@@ -27,6 +33,8 @@ export class Effects {
   private readonly smokeCol: Float32Array;
   private readonly smokeVel: Float32Array;
   private readonly smokeAge: Float32Array;
+  /** Per-particle colour: grey tyre smoke, white spray, brown dust, dark mud. */
+  private readonly smokeTint: Float32Array;
   private smokeIndex = 0;
   private readonly trails = new Map<string, Trail>();
   private readonly m = new THREE.Matrix4();
@@ -39,7 +47,7 @@ export class Effects {
     private readonly track: Track,
   ) {
     const markMat = new THREE.MeshBasicMaterial({
-      color: 0x111111,
+      color: 0xffffff,
       transparent: true,
       opacity: 0.55,
       depthWrite: false,
@@ -59,6 +67,7 @@ export class Effects {
     this.smokeCol = new Float32Array(MAX_SMOKE * 4);
     this.smokeVel = new Float32Array(MAX_SMOKE * 3);
     this.smokeAge = new Float32Array(MAX_SMOKE).fill(99);
+    this.smokeTint = new Float32Array(MAX_SMOKE * 3).fill(0.85);
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.BufferAttribute(this.smokePos, 3));
     geo.setAttribute('color', new THREE.BufferAttribute(this.smokeCol, 4));
@@ -111,13 +120,22 @@ export class Effects {
       const intensity = sliding ? Math.min(1, (Math.abs(vL) - 3) / 8 + car.upset) : 0;
 
       // Rain: spray off the rear tyres at speed, a burst through puddles (none in the tunnel).
+      // On dirt the spray is mud; in the dry, dirt kicks up dust.
       if (this.wet && car.grounded && speed > 10 && !inTunnel(this.track, trail.sampleHint)) {
-        const rate = Math.min(1, (speed - 10) / 35) * 0.25 + (car.puddle ? 1.2 : 0);
+        const rate = Math.min(1, (speed - 10) / 35) * (car.dirt ? 0.6 : 0.25) + (car.puddle ? 1.2 : 0);
         for (const [ox, oz] of REAR_WHEELS) {
           if (Math.random() > rate * dt * 60 * 0.5) continue;
           const x = p.x + fz * ox + fx * oz;
           const z = p.z - fx * ox + fz * oz;
-          this.spray(new THREE.Vector3(x, p.y - CAR_RIDE_HEIGHT + 0.1, z), v, car.puddle);
+          this.spray(new THREE.Vector3(x, p.y - CAR_RIDE_HEIGHT + 0.1, z), v, car.puddle, car.dirt ? MUD : SPRAY);
+        }
+      } else if (car.dirt && car.grounded && speed > 6) {
+        const rate = Math.min(1, (speed - 6) / 30) * 0.45 + (sliding ? 0.8 : 0);
+        for (const [ox, oz] of REAR_WHEELS) {
+          if (Math.random() > rate * dt * 60 * 0.5) continue;
+          const x = p.x + fz * ox + fx * oz;
+          const z = p.z - fx * ox + fz * oz;
+          this.dust(new THREE.Vector3(x, p.y - CAR_RIDE_HEIGHT + 0.2, z), v);
         }
       }
 
@@ -134,9 +152,10 @@ export class Effects {
         const here = new THREE.Vector3(x, y, z);
         const last = trail.last[w];
         if (last && here.distanceToSquared(last) > 0.04) {
-          this.addMark(last, here);
+          this.addMark(last, here, car.dirt);
           trail.last[w] = here;
-          if (Math.random() < intensity * 0.9) this.puff(here, v);
+          // On dirt, the dust above stands in for tyre smoke.
+          if (!car.dirt && Math.random() < intensity * 0.9) this.puff(here, v);
         } else if (!last) {
           trail.last[w] = here;
         }
@@ -152,7 +171,7 @@ export class Effects {
     return Math.abs(road - (carY - CAR_RIDE_HEIGHT)) < 1.5 ? road + 0.035 : carY - CAR_RIDE_HEIGHT + 0.035;
   }
 
-  private addMark(a: THREE.Vector3, b: THREE.Vector3): void {
+  private addMark(a: THREE.Vector3, b: THREE.Vector3, dirt: boolean): void {
     const len = a.distanceTo(b);
     if (len > 3) return; // teleport (reset/correction), not a skid
     // Marks are laid flat: none up a channel's steep walls.
@@ -161,6 +180,9 @@ export class Effects {
     this.q.setFromAxisAngle(this.up, Math.atan2(b.x - a.x, b.z - a.z));
     this.m.compose(mid, this.q, new THREE.Vector3(1, 1, len + 0.05));
     this.marks.setMatrixAt(this.markIndex, this.m);
+    // Rubber on tarmac, a darker rut in dirt.
+    this.marks.setColorAt(this.markIndex, dirt ? RUT : RUBBER);
+    if (this.marks.instanceColor) this.marks.instanceColor.needsUpdate = true;
     this.markIndex = (this.markIndex + 1) % MAX_MARKS;
     this.marks.count = Math.max(this.marks.count, this.markIndex === 0 ? MAX_MARKS : this.markIndex);
     this.marks.instanceMatrix.needsUpdate = true;
@@ -169,8 +191,9 @@ export class Effects {
   /** Weather sets this: spray behind cars on a wet road. */
   wet = false;
 
-  private spray(at: THREE.Vector3, v: { x: number; z: number }, big: boolean): void {
+  private spray(at: THREE.Vector3, v: { x: number; z: number }, big: boolean, tint: THREE.Color): void {
     const i = this.smokeIndex;
+    this.smokeTint.set([tint.r, tint.g, tint.b], i * 3);
     this.smokeIndex = (i + 1) % MAX_SMOKE;
     this.smokePos.set([at.x, at.y, at.z], i * 3);
     const up = big ? 1.6 + Math.random() * 1.4 : 0.5 + Math.random() * 0.7;
@@ -187,8 +210,19 @@ export class Effects {
     return Math.abs(profileSlope(this.track.def, lat)) > 0.15;
   }
 
+  /** Dust kicked up off dirt: browner and lazier than tyre smoke. */
+  private dust(at: THREE.Vector3, v: { x: number; z: number }): void {
+    const i = this.smokeIndex;
+    this.smokeIndex = (i + 1) % MAX_SMOKE;
+    this.smokePos.set([at.x, at.y, at.z], i * 3);
+    this.smokeVel.set([v.x * 0.3 + (Math.random() - 0.5) * 1.5, 0.6 + Math.random() * 0.8, v.z * 0.3 + (Math.random() - 0.5) * 1.5], i * 3);
+    this.smokeTint.set([DUST.r, DUST.g, DUST.b], i * 3);
+    this.smokeAge[i] = 0.15;
+  }
+
   private puff(at: THREE.Vector3, v: { x: number; z: number }): void {
     const i = this.smokeIndex;
+    this.smokeTint.set([SMOKE.r, SMOKE.g, SMOKE.b], i * 3);
     this.smokeIndex = (i + 1) % MAX_SMOKE;
     this.smokePos.set([at.x, at.y + 0.3, at.z], i * 3);
     this.smokeVel.set([v.x * 0.25 + (Math.random() - 0.5), 0.9 + Math.random() * 0.6, v.z * 0.25 + (Math.random() - 0.5)], i * 3);
@@ -208,7 +242,7 @@ export class Effects {
         this.smokeVel[k + 2] *= 1 - dt * 1.5;
       }
       const alpha = age < life ? 0.45 * (1 - age / life) : 0;
-      this.smokeCol.set([0.85, 0.85, 0.85, alpha], i * 4);
+      this.smokeCol.set([this.smokeTint[k], this.smokeTint[k + 1], this.smokeTint[k + 2], alpha], i * 4);
     }
     this.smoke.geometry.getAttribute('position').needsUpdate = true;
     this.smoke.geometry.getAttribute('color').needsUpdate = true;

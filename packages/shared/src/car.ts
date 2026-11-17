@@ -15,6 +15,8 @@ const PIPE_HOLD = 12;
 const PIPE_REACH = 1.5;
 /** Bobsled channels: fastest height correction toward the ice (m/s), so it never launches. */
 const PIPE_HOLD_MAX = 3;
+/** How fast dirt scrubs off speed above its top speed (m/s²). */
+const DIRT_SCRUB = 6;
 /** Steeply banked track steeper than this (rad, ~5°) holds the car to its surface. */
 const BANK_HOLD_ANGLE = 0.09;
 /** Bobsled channels: the suspension ray starts this far above the car (m). */
@@ -77,6 +79,8 @@ export class Car {
   private sampleHint = 0;
   /** Driving through standing water this tick (for spray and sound). */
   puddle = false;
+  /** Wheels on dirt (or mud) this tick (for dust and sound). */
+  dirt = false;
   /**
    * Extra yaw rate this tick from glancing off other cars (set by SimWorld before controls).
    * Derived from positions each tick, so it isn't part of the networked state.
@@ -229,11 +233,13 @@ export class Car {
     }
 
     this.puddle = false;
+    this.dirt = false;
     if (this.grounded) {
       // Rain: wet grip, and standing water where the track has puddles.
       const surface = surfaceTuning(t, weather, this.track, this.sampleHint, pos.x, pos.z);
       t = surface.tuning;
       this.puddle = surface.puddle;
+      this.dirt = surface.dirt;
       const throttle = clamp(input.throttle, -1, 1);
       if (throttle > 0) {
         if (vF < -0.5) {
@@ -254,6 +260,8 @@ export class Car {
 
       if (input.handbrake) vF = approach(vF, 0, t.handbrakeDecel * dt);
       if (this.puddle) vF = approach(vF, 0, PUDDLE.drag * dt);
+      // Dirt's lower top speed: arriving faster from the tarmac, the loose surface scrubs it off.
+      if (this.dirt && vF > t.maxSpeed) vF = approach(vF, t.maxSpeed, DIRT_SCRUB * dt);
 
       // Scraping a wall bleeds speed.
       const wall = this.wallContact(pos.x, pos.z, fx, fz);

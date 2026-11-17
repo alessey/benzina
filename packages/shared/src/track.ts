@@ -43,6 +43,8 @@ export interface TrackDef {
   scenery?: 'country' | 'city' | 'snow' | 'speedway';
   /** A covered section, from one control point to another (indices into controlPoints). */
   tunnel?: [number, number];
+  /** A dirt section, from one control point to another: loose grip, mud in the rain. */
+  dirt?: [number, number];
   /**
    * A U-shaped channel instead of a flat road (bobsled run): a flat floor `floor` metres
    * either side of the centre, then curved walls of `radius` rising to `angle` radians at the
@@ -140,6 +142,8 @@ export interface Track {
   bounds: { minX: number; maxX: number; minZ: number; maxZ: number; maxY: number };
   /** Covered section as sample indices [from, to] in driving order (may wrap), or null. */
   tunnel: [number, number] | null;
+  /** Dirt section as sample indices [from, to] in driving order (may wrap), or null. */
+  dirt: [number, number] | null;
   /** Banking is set per turn (ControlPoint.bank) and the physics feels it. */
   steepBanks: boolean;
 }
@@ -159,6 +163,13 @@ export function bankGrip(track: Track, i: number, turn: number, gravity: number)
   if (!track.steepBanks) return 0;
   const b = track.samples[i].bank;
   return b * turn > 0 ? gravity * Math.sin(Math.abs(b)) * BANK_GRIP : 0;
+}
+
+/** Is sample i on the track's dirt section? */
+export function onDirt(track: Track, i: number): boolean {
+  if (!track.dirt) return false;
+  const [a, b] = track.dirt;
+  return a <= b ? i >= a && i <= b : i >= a || i <= b;
 }
 
 /** Distance between centre line samples, metres. */
@@ -340,8 +351,9 @@ export function buildTrack(def: TrackDef): Track {
     return best;
   };
   const tunnel: [number, number] | null = def.tunnel ? [nearest(cp[def.tunnel[0]]), nearest(cp[def.tunnel[1]])] : null;
+  const dirt: [number, number] | null = def.dirt ? [nearest(cp[def.dirt[0]]), nearest(cp[def.dirt[1]])] : null;
 
-  return { def, samples, length, leftEdge, rightEdge, walls, bounds, tunnel, steepBanks };
+  return { def, samples, length, leftEdge, rightEdge, walls, bounds, tunnel, dirt, steepBanks };
 }
 
 /** One box per edge segment, pushed outward by half the wall thickness, slightly overlapping. */

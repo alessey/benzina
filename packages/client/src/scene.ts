@@ -1,7 +1,7 @@
 import { buildSpeedway } from './speedway';
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { crossSection, nearestSampleIndex, rightOf, roadPoint, type Track, type Vec3, type Weather } from '@benzina/shared';
+import { crossSection, nearestSampleIndex, onDirt, rightOf, roadPoint, type Track, type Vec3, type Weather } from '@benzina/shared';
 import { buildPuddles, cameraInTunnel, LOOKS, paintSky, Rain, skyEnvironment, type WeatherLook } from './weatherFx';
 
 export interface GameScene {
@@ -127,6 +127,9 @@ export function createScene(opts: SceneOptions): GameScene {
   const wetRoad = surfaceMaterialStd(1, { color: 0x2c2e33, roughness: 0.28, metalness: 0.05, envMapIntensity: 1.1 });
   const puddleMat = surfaceMaterialStd(3, { color: 0x46525d, roughness: 0.03, metalness: 0.6, envMapIntensity: 1.15, side: THREE.DoubleSide });
   let dryRoad: THREE.Material | null = null;
+  // Dirt, and the mud it turns into in the rain: darker and glossy.
+  const dirtMat = surfaceMaterial(1, { vertexColors: true });
+  const mudMat = surfaceMaterialStd(1, { vertexColors: true, color: 0xb09a84, roughness: 0.42, metalness: 0, envMapIntensity: 0.6 });
 
   /** Apply the weather to the current track's meshes (road surface, puddles, mountains). */
   const dressTrack = () => {
@@ -138,6 +141,8 @@ export function createScene(opts: SceneOptions): GameScene {
       // A bobsled channel is ice, not asphalt: it keeps its own surface in the rain.
       road.material = look.wet && !terrain?.track.def.pipe ? wetRoad : dryRoad;
     }
+    const dirtRoad = trackGroup.getObjectByName('dirtRoad') as THREE.Mesh | undefined;
+    if (dirtRoad) dirtRoad.material = look.wet ? mudMat : dirtMat;
     const puddles = trackGroup.getObjectByName('puddles');
     if (puddles) puddles.visible = look.wet;
     const mountains = trackGroup.getObjectByName('mountains') as THREE.Mesh | undefined;
@@ -175,6 +180,8 @@ export function createScene(opts: SceneOptions): GameScene {
       env = skyEnvironment(renderer, look);
       wetRoad.envMap = env;
       puddleMat.envMap = env;
+      mudMat.envMap = env;
+      mudMat.needsUpdate = true;
       wetRoad.needsUpdate = true;
       puddleMat.needsUpdate = true;
       dressTrack();
@@ -185,6 +192,12 @@ export function createScene(opts: SceneOptions): GameScene {
         // Shared weather materials outlive the track: detach them before disposing.
         const road = trackGroup.getObjectByName('road') as THREE.Mesh | undefined;
         if (road && dryRoad) road.material = dryRoad;
+        // The dirt surface's materials are shared too: take its mesh out before disposing.
+        const oldDirt = trackGroup.getObjectByName('dirtRoad') as THREE.Mesh | undefined;
+        if (oldDirt) {
+          oldDirt.removeFromParent();
+          oldDirt.geometry.dispose();
+        }
         const oldPuddles = trackGroup.getObjectByName('puddles') as THREE.Mesh | undefined;
         if (oldPuddles) {
           oldPuddles.removeFromParent();
@@ -198,6 +211,8 @@ export function createScene(opts: SceneOptions): GameScene {
       lights = new StartLights(track);
       trackGroup.add(lights.group);
       if (track.def.scenery !== 'speedway') trackGroup.add(buildGrandstand(track, terrain));
+      const dirtRoad = buildDirtRoad(track, dirtMat);
+      if (dirtRoad) trackGroup.add(dirtRoad);
       const puddles = buildPuddles(track, puddleMat);
       if (puddles) {
         puddles.name = 'puddles';
@@ -412,6 +427,8 @@ function buildTrackScenery(track: Track, terrain: Terrain): THREE.Group {
   group.add(terrain.mesh());
   group.add(buildFarGround(track));
   group.add(buildRoad(track));
+  const bales = buildHayBales(track, terrain);
+  if (bales) group.add(bales);
   for (const curb of buildCurbs(track)) group.add(curb);
   group.add(buildStartLine(track));
   for (const ramp of buildRampMarkings(track)) group.add(ramp);
@@ -476,14 +493,136 @@ function stripGeometry(a: Vec3[], b: Vec3[], lift: number, colorOf?: (i: number)
   return g;
 }
 
+/** Samples either side of a dirt section over which the surface blends from tarmac to dirt. */
+const DIRT_BLEND = 4;
+
+/** How much dirt there is at sample i: 1 on the dirt section, fading to 0 over DIRT_BLEND. */
+function dirtAmount(track: Track, i: number): number {
+  if (!track.dirt) return 0;
+  const n = track.samples.length;
+  for (let k = 0; k <= DIRT_BLEND; k++) {
+    if (onDirt(track, (i + k) % n) || onDirt(track, (i - k + n) % n)) return 1 - k / (DIRT_BLEND + 1);
+  }
+  return 0;
+}
+
 function buildRoad(track: Track): THREE.Mesh {
   const geo = track.def.pipe ? channelGeometry(track) : stripGeometry(track.leftEdge, track.rightEdge, 0.02);
+  if (track.dirt) {
+    // The dirt section (and its blend into the tarmac) is a mesh of its own.
+    const index = Array.from(geo.getIndex()!.array);
+    const keep: number[] = [];
+    for (let q = 0; q < track.samples.length; q++) if (dirtAmount(track, q) === 0) keep.push(...index.slice(q * 6, q * 6 + 6));
+    geo.setIndex(keep);
+  }
   const mat = track.def.pipe ? surfaceMaterial(1, { vertexColors: true }) : surfaceMaterial(1, { color: 0x3d3f44 });
   const mesh = new THREE.Mesh(geo, mat);
   mesh.name = 'road';
   mesh.receiveShadow = true;
   mesh.renderOrder = ORDER.road;
   return mesh;
+}
+
+/**
+ * The dirt section's surface: brown with blotches, darker ruts worn along the racing lines,
+ * blending into the tarmac at either end. Several columns across, so the ruts show.
+ */
+function buildDirtRoad(track: Track, material: THREE.Material): THREE.Mesh | null {
+  if (!track.dirt) return null;
+  const n = track.samples.length;
+  const cols = 12;
+  const asphalt = new THREE.Color(0x3d3f44);
+  const dirt = new THREE.Color(0x9b7a52);
+  const dark = new THREE.Color(0x6e5236);
+  const pos: number[] = [];
+  const col: number[] = [];
+  const idx: number[] = [];
+  const c = new THREE.Color();
+  let rows = 0;
+  let prevIncluded = false;
+  for (let k = 0; k <= n; k++) {
+    const i = k % n;
+    const amount = dirtAmount(track, i);
+    const next = dirtAmount(track, (i + 1) % n);
+    // Include a row if it or a neighbour touches dirt, so the mesh covers each quad once.
+    const included = amount > 0 || next > 0 || dirtAmount(track, (i - 1 + n) % n) > 0;
+    if (!included) {
+      prevIncluded = false;
+      continue;
+    }
+    const s = track.samples[i];
+    for (let j = 0; j <= cols; j++) {
+      const f = -1 + (2 * j) / cols;
+      const p = roadPoint(track, i, f, 0.02);
+      pos.push(p.x, p.y, p.z);
+      // Blotches (from position, so they don't swim) and two ruts each side of centre.
+      const blotch = Math.sin(p.x * 0.31 + Math.cos(p.z * 0.17) * 2) * Math.cos(p.z * 0.27 - p.x * 0.05) * 0.5 + 0.5;
+      const rut = Math.max(0, 1 - Math.abs(Math.abs(f) - 0.32) / 0.12) * (0.75 + 0.25 * Math.sin(s.dist * 0.4 + j));
+      const edge = Math.max(0, (Math.abs(f) - 0.85) / 0.15);
+      c.copy(dirt).lerp(dark, Math.min(1, blotch * 0.45 + rut * 0.7 + edge * 0.3));
+      c.lerp(asphalt, 1 - amount);
+      col.push(c.r, c.g, c.b);
+    }
+    if (prevIncluded && rows > 0) {
+      const a = (rows - 1) * (cols + 1);
+      const b = rows * (cols + 1);
+      for (let j = 0; j < cols; j++) idx.push(a + j, b + j, a + j + 1, a + j + 1, b + j, b + j + 1);
+    }
+    rows++;
+    prevIncluded = true;
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+  geo.setIndex(idx);
+  geo.computeVertexNormals();
+  // Face up whichever way round the rows run.
+  if (geo.getAttribute('normal').getY(0) < 0) {
+    geo.setIndex(idx.map((_, k) => idx[k - (k % 3) + [0, 2, 1][k % 3]]));
+    geo.computeVertexNormals();
+  }
+  const mesh = new THREE.Mesh(geo, material);
+  mesh.name = 'dirtRoad';
+  mesh.receiveShadow = true;
+  mesh.renderOrder = ORDER.road;
+  return mesh;
+}
+
+/**
+ * Hay bales lined up outside the walls along the dirt section.
+ */
+function buildHayBales(track: Track, terrain: Terrain): THREE.InstancedMesh | null {
+  if (!track.dirt) return null;
+  const n = track.samples.length;
+  const rand = mulberry32(91);
+  const spots: THREE.Matrix4[] = [];
+  const q = new THREE.Quaternion();
+  const e = new THREE.Euler();
+  for (let i = 0; i < n; i += 2) {
+    if (!onDirt(track, i)) continue;
+    for (const [edge, side] of [
+      [track.leftEdge, -1],
+      [track.rightEdge, 1],
+    ] as const) {
+      if (rand() < 0.45) continue;
+      const s = track.samples[i];
+      const r = rightOf(s.tx, s.tz);
+      const out = side * (track.def.wallThickness + 1.1);
+      const x = edge[i].x + r.x * out;
+      const z = edge[i].z + r.z * out;
+      // Lying on its side, along the track.
+      q.setFromEuler(e.set(0, Math.atan2(s.tx, s.tz), Math.PI / 2, 'YXZ'));
+      spots.push(new THREE.Matrix4().compose(new THREE.Vector3(x, terrain.heightAt(x, z) + 0.62, z), q, new THREE.Vector3(1, 1, 1)));
+    }
+  }
+  const geo = new THREE.CylinderGeometry(0.65, 0.65, 1.4, 10);
+  geo.rotateX(Math.PI / 2);
+  geo.rotateZ(Math.PI / 2);
+  const bales = new THREE.InstancedMesh(geo, new THREE.MeshLambertMaterial({ color: 0xd2ad5c }), spots.length);
+  spots.forEach((m, k) => bales.setMatrixAt(k, m));
+  bales.castShadow = true;
+  bales.receiveShadow = true;
+  return bales;
 }
 
 /**
@@ -583,7 +722,9 @@ function buildCurbs(track: Track): THREE.Mesh[] {
   // Ice channels get a blue-and-white lip instead of red-and-white curbs.
   const red = new THREE.Color(track.def.pipe ? 0x3a78c0 : 0xd23a2e);
   const white = new THREE.Color(0xf2f2f2);
-  const stripe = (i: number) => (Math.floor(i / 2) % 2 === 0 ? red : white);
+  // On dirt, a low earth berm instead of painted curbs.
+  const berm = new THREE.Color(0x7a5c3c);
+  const stripe = (i: number) => (onDirt(track, i) ? berm : Math.floor(i / 2) % 2 === 0 ? red : white);
   const mat = surfaceMaterial(2, { vertexColors: true });
   // A channel's lip follows the curved wall, so it's built from points on the surface.
   const lip = (side: number) => {
@@ -706,7 +847,12 @@ function buildWalls(track: Track): THREE.InstancedMesh {
   const m = new THREE.Matrix4();
   const q = new THREE.Quaternion();
   const e = new THREE.Euler(0, 0, 0, 'YXZ');
+  const n = track.samples.length;
+  const wood = new THREE.Color(0x8a6440);
+  const concrete = new THREE.Color(0xffffff);
   track.walls.forEach((w, i) => {
+    // Along the dirt the walls are wooden fencing (left walls first, then right).
+    mesh.setColorAt(i, onDirt(track, i % n) ? wood : concrete);
     // Tilted to the road's slope so walls run smoothly up ramps instead of stepping.
     // (Rotation about local +X tips +Z down, so climbing is a negative angle.)
     q.setFromEuler(e.set(-w.pitch, w.yaw, 0));

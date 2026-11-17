@@ -1,5 +1,5 @@
 import type { CarTuning } from './config';
-import { rightOf, type Track } from './track';
+import { onDirt, rightOf, type Track } from './track';
 
 /**
  * Weather is a race setting, like the track: the server and every client simulate the same
@@ -24,6 +24,28 @@ export function parseWeather(raw: unknown): Weather {
 export const WET = { grip: 0.72, driftGrip: 0.8, cornerGrip: 0.8, brakeDecel: 0.72, accel: 0.9 };
 /** Standing water on top of that: the car slides and slows. */
 export const PUDDLE = { grip: 0.3, cornerGrip: 0.6, accel: 0.5, drag: 4 };
+/**
+ * Dirt: loose, drifty and a bit slower (multipliers on the class tuning). Mud is dirt in the
+ * rain: looser and slower still. (They replace the wet-road multipliers, not stack on them.)
+ */
+export const DIRT = { grip: 0.45, driftGrip: 0.85, cornerGrip: 0.7, brakeDecel: 0.7, accel: 0.85, maxSpeed: 0.82 };
+export const MUD = { grip: 0.32, driftGrip: 0.7, cornerGrip: 0.56, brakeDecel: 0.55, accel: 0.7, maxSpeed: 0.72 };
+
+/** Dirt or mud multipliers at sample i, or null on tarmac. */
+export function looseSurface(track: Track, i: number, weather: Weather): typeof DIRT | null {
+  if (!onDirt(track, i)) return null;
+  return weather === 'rain' ? MUD : DIRT;
+}
+
+/**
+ * Cornering grip at sample i relative to the tuning bots are given (already wet in the rain):
+ * what a bot multiplies its corner grip by on dirt or mud.
+ */
+export function surfaceCornerFactor(track: Track, i: number, weather: Weather): number {
+  const loose = looseSurface(track, i, weather);
+  if (!loose) return 1;
+  return loose.cornerGrip / (weather === 'rain' ? WET.cornerGrip : 1);
+}
 
 /** Tuning for a wet road (no puddle): what bots plan their corner speeds with in the rain. */
 export function weatherTuning(t: CarTuning, weather: Weather): CarTuning {
@@ -90,7 +112,8 @@ export function trackPuddles(track: Track): Puddle[] {
     const i0 = track.samples.findIndex((s) => s.dist >= d);
     const len = 2 + Math.floor(rand() * 3);
     const i1 = Math.min(n - 1, i0 + len);
-    if (i0 < 0 || inTunnel(track, i0) || inTunnel(track, i1)) continue;
+    // No standing water in the tunnel, or on dirt (that's mud instead).
+    if (i0 < 0 || inTunnel(track, i0) || inTunnel(track, i1) || onDirt(track, i0) || onDirt(track, i1)) continue;
     const halfWidth = 1.3 + rand() * 0.9;
     const room = Math.max(0, hw - halfWidth - 0.6);
     puddles.push({ i0, i1, lat: (rand() * 2 - 1) * room, halfWidth });
@@ -111,7 +134,8 @@ export function inPuddle(track: Track, i: number, x: number, z: number): boolean
 }
 
 /**
- * Tuning for where a car is right now: dry, wet, or in a puddle. (Rain only; the tunnel is dry.)
+ * Tuning for where a car is right now: dry, wet, in a puddle, on dirt or in mud. (Rain only
+ * wets the road; the tunnel is dry.)
  */
 export function surfaceTuning(
   t: CarTuning,
@@ -120,10 +144,26 @@ export function surfaceTuning(
   i: number,
   x: number,
   z: number,
-): { tuning: CarTuning; puddle: boolean } {
-  if (weather !== 'rain' || inTunnel(track, i)) return { tuning: t, puddle: false };
+): { tuning: CarTuning; puddle: boolean; dirt: boolean } {
+  const loose = looseSurface(track, i, weather);
+  if (loose) {
+    return {
+      tuning: {
+        ...t,
+        grip: t.grip * loose.grip,
+        driftGrip: t.driftGrip * loose.driftGrip,
+        cornerGrip: t.cornerGrip * loose.cornerGrip,
+        brakeDecel: t.brakeDecel * loose.brakeDecel,
+        accel: t.accel * loose.accel,
+        maxSpeed: t.maxSpeed * loose.maxSpeed,
+      },
+      puddle: false,
+      dirt: true,
+    };
+  }
+  if (weather !== 'rain' || inTunnel(track, i)) return { tuning: t, puddle: false, dirt: false };
   const wet = weatherTuning(t, weather);
-  if (!inPuddle(track, i, x, z)) return { tuning: wet, puddle: false };
+  if (!inPuddle(track, i, x, z)) return { tuning: wet, puddle: false, dirt: false };
   return {
     tuning: {
       ...wet,
@@ -133,5 +173,6 @@ export function surfaceTuning(
       accel: wet.accel * PUDDLE.accel,
     },
     puddle: true,
+    dirt: false,
   };
 }

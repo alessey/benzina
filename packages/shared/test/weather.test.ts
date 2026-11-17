@@ -30,7 +30,7 @@ function lap(def: TrackDef, cls: CarClass, weather: Weather): { time: number; pu
   const crossings: number[] = [];
   let puddleTicks = 0;
   for (let t = 0; t < 60 * 240 && crossings.length < 3; t++) {
-    sim.step(new Map([['a', botInput(car, track, 1, weatherTuning(sim.tuning, weather), sim.tick * DT)]]));
+    sim.step(new Map([['a', botInput(car, track, 1, weatherTuning(sim.tuning, weather), sim.tick * DT, weather)]]));
     if (crossings.length === 1 && car.puddle) puddleTicks++;
     const p = car.body.translation();
     const i = nearestSampleIndex(track, p.x, p.z);
