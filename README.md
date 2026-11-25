@@ -36,7 +36,7 @@ URL options:
 |---|---|
 | `?room=CODE` | invite link: pre-fills the code on the start screen |
 | `?offline&bots=N` | skip the menu: offline practice/race against N bots |
-| `?track=ID` | track for offline play and the menu backdrop (`circuito`, `colline`, `serpente`, `salto`, `porto`, `canalone`, `autodromo`) |
+| `?track=ID` | track for offline play and the menu backdrop (`circuito`, `colline`, `serpente`, `salto`, `porto`, `canalone`, `autodromo`, `vetta`) |
 | `?weather=W` | weather for offline play (`clear`, `overcast`, `rain`, `fog`, `dusk`) |
 | `?autojoin` (+`room`, `name`, `bots`) | skip the menu and join (used by automated tests) |
 | `?bot` | autopilot drives your car |
@@ -65,7 +65,7 @@ packages/
     track.ts    tracks from a closed spline with heights → centre line, slope, banking, edges, walls,
                 and optional U-shaped channel profile (bobsled run)
     tracks.ts   the circuits (Circuito Uno, Colline, Il Serpente, Il Salto, Porto Azzurro, Canalone,
-                Autodromo)
+                Autodromo, La Vetta)
     car.ts      arcade car controller (one rigid body, roll/pitch locked)
     world.ts    SimWorld: physics world + track + cars, fixed-step `step(inputs)`
     state.ts    CarState snapshot
@@ -131,6 +131,15 @@ packages/
   in the rain it's mud (`MUD`), looser and slower again, and there are no puddles on it. Bots
   scale their corner speeds by the surface. Visually: a brown rutted surface that turns glossy in
   the rain, earth berms instead of curbs, wooden fencing, hay bales, dust and mud spray, ruts.
+- **Snow roads.** A track can be all packed snow (La Vetta): the same loose-surface system with
+  `SNOW` tuning, and rain falls as snow (`SNOWFALL`: looser still, white flakes, no rain sound).
+  The tunnel is bare tarmac. Snowbanks, marker poles, powder spray. A snowy track's tunnel goes
+  through a mountain added to the terrain, with rock faces round the portals.
+- **Chasms.** A track can leave a gap in the road between two control points (La Vetta's summit
+  jump): no road collider or visuals across it, a ravine carved into the terrain, and a car that
+  falls in (more than 8 m below the lip-to-landing line) is put back on the road well before the
+  lip for another run. The landing sits a little lower than the lip: about
+  80-85 km/h at the lip clears it, and a car that falls in restarts 60 m back to build that speed.
 - **Fixed 60 Hz tick** on both sides; rendering interpolates between ticks.
 
 ### Netcode

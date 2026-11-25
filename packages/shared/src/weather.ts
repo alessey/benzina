@@ -30,10 +30,14 @@ export const PUDDLE = { grip: 0.3, cornerGrip: 0.6, accel: 0.5, drag: 4 };
  */
 export const DIRT = { grip: 0.45, driftGrip: 0.85, cornerGrip: 0.7, brakeDecel: 0.7, accel: 0.85, maxSpeed: 0.82 };
 export const MUD = { grip: 0.32, driftGrip: 0.7, cornerGrip: 0.56, brakeDecel: 0.55, accel: 0.7, maxSpeed: 0.72 };
+/** Packed snow (snow roads), and fresh snow falling on it (rain, on a snow track). */
+export const SNOW = { grip: 0.48, driftGrip: 0.85, cornerGrip: 0.72, brakeDecel: 0.7, accel: 0.86, maxSpeed: 0.86 };
+export const SNOWFALL = { grip: 0.36, driftGrip: 0.72, cornerGrip: 0.6, brakeDecel: 0.58, accel: 0.76, maxSpeed: 0.8 };
 
-/** Dirt or mud multipliers at sample i, or null on tarmac. */
+/** Loose-surface multipliers at sample i (dirt, mud, snow, fresh snow), or null on tarmac. */
 export function looseSurface(track: Track, i: number, weather: Weather): typeof DIRT | null {
   if (!onDirt(track, i)) return null;
+  if (track.def.snow) return weather === 'rain' ? SNOWFALL : SNOW;
   return weather === 'rain' ? MUD : DIRT;
 }
 

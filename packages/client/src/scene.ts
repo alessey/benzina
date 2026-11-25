@@ -1,7 +1,7 @@
 import { buildSpeedway } from './speedway';
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { crossSection, nearestSampleIndex, onDirt, rightOf, roadPoint, type Track, type Vec3, type Weather } from '@benzina/shared';
+import { crossSection, gapAfter, nearestSampleIndex, onDirt, overGap, rightOf, roadPoint, type Track, type Vec3, type Weather } from '@benzina/shared';
 import { buildPuddles, cameraInTunnel, LOOKS, paintSky, Rain, skyEnvironment, type WeatherLook } from './weatherFx';
 
 export interface GameScene {
@@ -142,7 +142,8 @@ export function createScene(opts: SceneOptions): GameScene {
       road.material = look.wet && !terrain?.track.def.pipe ? wetRoad : dryRoad;
     }
     const dirtRoad = trackGroup.getObjectByName('dirtRoad') as THREE.Mesh | undefined;
-    if (dirtRoad) dirtRoad.material = look.wet ? mudMat : dirtMat;
+    // Dirt turns to mud in the rain; snow just gets fresh snow on it.
+    if (dirtRoad) dirtRoad.material = look.wet && !terrain?.track.def.snow ? mudMat : dirtMat;
     const puddles = trackGroup.getObjectByName('puddles');
     if (puddles) puddles.visible = look.wet;
     const mountains = trackGroup.getObjectByName('mountains') as THREE.Mesh | undefined;
@@ -232,7 +233,7 @@ export function createScene(opts: SceneOptions): GameScene {
     },
     update(dt = 1 / 60) {
       sky.position.copy(camera.position);
-      rain.update(weather === 'rain' && !cameraInTunnel(terrain?.track ?? null, camera), camera, dt);
+      rain.update(weather === 'rain' && !cameraInTunnel(terrain?.track ?? null, camera), camera, dt, !!terrain?.track.def.snow);
     },
   };
 }
@@ -289,6 +290,66 @@ function smoothstep(a: number, b: number, x: number): number {
  * or in a cutting) and relaxes into gentle rolling hills away from it. Cars never leave the
  * road, so this is purely visual and has no collider.
  */
+const RAVINE_ROCK = new THREE.Color(0x5f646c);
+/** Lighter layers in a ravine's rock, near the top. */
+const RAVINE_STRATA = new THREE.Color(0x8c9097);
+/** Deep in a ravine, out of the light. */
+const RAVINE_DEEP = new THREE.Color(0x30343a);
+/** Snow-dusted rock on a ravine's floor. */
+const RAVINE_FLOOR = new THREE.Color(0xaab3bd);
+
+/**
+ * A chasm's ravine: a gorge across the track between the lip and the landing, running out to
+ * either side (narrowing and shallowing at its ends), its floor far below the road.
+ */
+function chasmRavine(track: Track): { carve: (x: number, z: number, margin?: number) => number; floor: number; top: number } | null {
+  if (!track.gap) return null;
+  const [a, b] = track.gap;
+  const lip = track.samples[a];
+  const land = track.samples[b];
+  const mx = (lip.x + land.x) / 2;
+  const mz = (lip.z + land.z) / 2;
+  const len = Math.hypot(land.x - lip.x, land.z - lip.z);
+  const tx = (land.x - lip.x) / len;
+  const tz = (land.z - lip.z) / len;
+  const half = len / 2;
+  return {
+    floor: Math.min(lip.y, land.y) - 32,
+    top: Math.min(lip.y, land.y),
+    /** How far (x, z) is carved in (0..1); `margin` widens it (for colouring the rock rim). */
+    carve: (x: number, z: number, margin = 0) => {
+      const along = (x - mx) * tx + (z - mz) * tz;
+      const lat = (x - mx) * -tz + (z - mz) * tx;
+      // The gorge's walls drop away right at the lip and the landing (the road ends at a cliff
+      // edge); away from the road it wanders a little and widens.
+      const off = smoothstep(12, 60, Math.abs(lat));
+      const width = half - 0.5 + margin + off * (3 + 1.5 * Math.sin(lat * 0.08));
+      const across = 1 - smoothstep(width, width + 5, Math.abs(along - off * 2 * Math.sin(lat * 0.05)));
+      const ends = 1 - smoothstep(55 + margin, 90 + margin, Math.abs(lat));
+      return across * ends;
+    },
+  };
+}
+
+/** Box blur of a grid in place, `radius` cells each way (separable, edges clamped). */
+function blurGrid(grid: Float32Array, cols: number, rows: number, radius: number): void {
+  const tmp = new Float32Array(grid.length);
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      let sum = 0;
+      for (let k = -radius; k <= radius; k++) sum += grid[r * cols + Math.min(cols - 1, Math.max(0, c + k))];
+      tmp[r * cols + c] = sum / (2 * radius + 1);
+    }
+  }
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      let sum = 0;
+      for (let k = -radius; k <= radius; k++) sum += tmp[Math.min(rows - 1, Math.max(0, r + k)) * cols + c];
+      grid[r * cols + c] = sum / (2 * radius + 1);
+    }
+  }
+}
+
 class Terrain {
   readonly minX: number;
   readonly minZ: number;
@@ -296,6 +357,8 @@ class Terrain {
   readonly rows: number;
   readonly heights: Float32Array;
   readonly roadDist: Float32Array;
+  /** 0..1 how far each point has been carved into a chasm's ravine (bare rock, not snow). */
+  readonly rock: Float32Array;
 
   constructor(
     readonly track: Track,
@@ -309,7 +372,12 @@ class Terrain {
     this.rows = Math.ceil((b.maxZ + margin - this.minZ) / cell) + 1;
     this.heights = new Float32Array(this.cols * this.rows);
     this.roadDist = new Float32Array(this.cols * this.rows);
+    this.rock = new Float32Array(this.cols * this.rows);
     const hw = track.def.width / 2;
+    const count = this.cols * this.rows;
+    const nearRoads = new Float32Array(count);
+    const naturals = new Float32Array(count);
+    const blends = new Float32Array(count);
     for (let r = 0; r < this.rows; r++) {
       for (let c = 0; c < this.cols; c++) {
         const x = this.minX + c * cell;
@@ -347,8 +415,41 @@ class Terrain {
         const natural = wet ? WATER_FLOOR : land * fade + FAR_GROUND_Y * (1 - fade);
         // At the water's edge the land drops sharply (a quay wall) instead of a long bank.
         const w = wet ? smoothstep(hw + 2, hw + 9, d) : smoothstep(hw + 4, hw + 50, d);
-        this.heights[r * this.cols + c] = nearRoad * (1 - w) + natural * w;
+        nearRoads[r * this.cols + c] = nearRoad;
+        naturals[r * this.cols + c] = natural;
+        blends[r * this.cols + c] = w;
         this.roadDist[r * this.cols + c] = d - hw;
+      }
+    }
+    // A mountainside follows the road's height, taken from the nearest stretch of road; between
+    // two legs of a switchback that jumps from one leg's height to the other's, leaving cliffs.
+    // Smooth it into a slope (the road itself, and the ground right beside it, aren't affected).
+    if (track.def.scenery === 'snow') {
+      for (let pass = 0; pass < 3; pass++) blurGrid(naturals, this.cols, this.rows, Math.max(1, Math.round(21 / cell)));
+    }
+    // The mountain a tunnel goes through rises out of the land around it.
+    const mountain = tunnelMountain(track);
+    if (mountain) {
+      for (let r = 0; r < this.rows; r++) {
+        for (let c = 0; c < this.cols; c++) naturals[r * this.cols + c] += mountain(this.minX + c * cell, this.minZ + r * cell);
+      }
+    }
+    for (let k = 0; k < count; k++) this.heights[k] = nearRoads[k] * (1 - blends[k]) + naturals[k] * blends[k];
+    // A chasm: a deep ravine across the road between the lip and the landing.
+    const ravine = chasmRavine(track);
+    if (ravine) {
+      for (let r = 0; r < this.rows; r++) {
+        for (let c = 0; c < this.cols; c++) {
+          const k = r * this.cols + c;
+          const x = this.minX + c * cell;
+          const z = this.minZ + r * cell;
+          // Rock colour reaches a little past the carve, so the coarse grid's walls are rock
+          // from the rim down instead of fading from snow.
+          this.rock[k] = ravine.carve(x, z, cell * 0.8);
+          const carve = ravine.carve(x, z);
+          if (carve <= 0) continue;
+          this.heights[k] += (ravine.floor - this.heights[k]) * carve;
+        }
       }
     }
   }
@@ -400,6 +501,8 @@ class Terrain {
     const grassDark = new THREE.Color(palette[1]);
     const dirt = new THREE.Color(palette[2]);
     const c = new THREE.Color();
+    const ravine = chasmRavine(this.track);
+    const rockColor = new THREE.Color();
     for (let i = 0; i < pos.count; i++) {
       const x = pos.getX(i) + this.minX + ((this.cols - 1) * this.cell) / 2;
       const z = pos.getZ(i) + this.minZ + ((this.rows - 1) * this.cell) / 2;
@@ -411,6 +514,17 @@ class Terrain {
       c.copy(grass).lerp(grassDark, n * 0.7);
       // A worn verge right beside the walls.
       c.lerp(dirt, 1 - smoothstep(0.5, 4, this.roadDist[k]));
+      // Bare rock down the walls of a ravine: layered, and darker the deeper it goes.
+      if (this.rock[k] > 0 && ravine) {
+        const y = this.heights[k];
+        const depth = Math.min(1, Math.max(0, (ravine.top - y) / (ravine.top - ravine.floor)));
+        const band = Math.sin(y * 0.9 + Math.sin(x * 0.05) * 1.5) > 0.35 ? 1 : 0;
+        // Darker down the walls, but the floor collects snow: a lighter surface at the bottom
+        // shows how far down it is.
+        rockColor.copy(RAVINE_ROCK).lerp(RAVINE_STRATA, band * 0.6 * (1 - depth)).lerp(RAVINE_DEEP, depth * 0.5);
+        rockColor.lerp(RAVINE_FLOOR, smoothstep(0.8, 0.97, depth));
+        c.lerp(rockColor, Math.min(1, this.rock[k] * 3));
+      }
       colors.push(c.r, c.g, c.b);
     }
     geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
@@ -429,6 +543,8 @@ function buildTrackScenery(track: Track, terrain: Terrain): THREE.Group {
   group.add(buildRoad(track));
   const bales = buildHayBales(track, terrain);
   if (bales) group.add(bales);
+  const edges = buildChasmEdges(track);
+  if (edges) group.add(edges);
   for (const curb of buildCurbs(track)) group.add(curb);
   group.add(buildStartLine(track));
   for (const ramp of buildRampMarkings(track)) group.add(ramp);
@@ -441,7 +557,7 @@ function buildTrackScenery(track: Track, terrain: Terrain): THREE.Group {
   }
   if (track.def.scenery === 'speedway') group.add(buildSpeedway(track, (x, z) => terrain.heightAt(x, z)));
   for (const water of buildWater(track)) group.add(water);
-  const tunnel = buildTunnel(track);
+  const tunnel = buildTunnel(track, terrain);
   if (tunnel) group.add(tunnel);
   const mountains = buildMountains(track);
   mountains.name = 'mountains';
@@ -493,12 +609,22 @@ function stripGeometry(a: Vec3[], b: Vec3[], lift: number, colorOf?: (i: number)
   return g;
 }
 
+/** Remove the quads over a chasm from a strip built one quad (6 indices) per sample. */
+function dropGapQuads(track: Track, geo: THREE.BufferGeometry): THREE.BufferGeometry {
+  if (!track.gap) return geo;
+  const index = Array.from(geo.getIndex()!.array);
+  const keep: number[] = [];
+  for (let q = 0; q * 6 < index.length; q++) if (!gapAfter(track, q)) keep.push(...index.slice(q * 6, q * 6 + 6));
+  geo.setIndex(keep);
+  return geo;
+}
+
 /** Samples either side of a dirt section over which the surface blends from tarmac to dirt. */
 const DIRT_BLEND = 4;
 
 /** How much dirt there is at sample i: 1 on the dirt section, fading to 0 over DIRT_BLEND. */
 function dirtAmount(track: Track, i: number): number {
-  if (!track.dirt) return 0;
+  if (!track.dirt && !track.def.snow) return 0;
   const n = track.samples.length;
   for (let k = 0; k <= DIRT_BLEND; k++) {
     if (onDirt(track, (i + k) % n) || onDirt(track, (i - k + n) % n)) return 1 - k / (DIRT_BLEND + 1);
@@ -508,13 +634,14 @@ function dirtAmount(track: Track, i: number): number {
 
 function buildRoad(track: Track): THREE.Mesh {
   const geo = track.def.pipe ? channelGeometry(track) : stripGeometry(track.leftEdge, track.rightEdge, 0.02);
-  if (track.dirt) {
-    // The dirt section (and its blend into the tarmac) is a mesh of its own.
+  if (track.dirt || track.def.snow) {
+    // The dirt or snow (and its blend into the tarmac) is a mesh of its own.
     const index = Array.from(geo.getIndex()!.array);
     const keep: number[] = [];
     for (let q = 0; q < track.samples.length; q++) if (dirtAmount(track, q) === 0) keep.push(...index.slice(q * 6, q * 6 + 6));
     geo.setIndex(keep);
   }
+  dropGapQuads(track, geo);
   const mat = track.def.pipe ? surfaceMaterial(1, { vertexColors: true }) : surfaceMaterial(1, { color: 0x3d3f44 });
   const mesh = new THREE.Mesh(geo, mat);
   mesh.name = 'road';
@@ -528,12 +655,14 @@ function buildRoad(track: Track): THREE.Mesh {
  * blending into the tarmac at either end. Several columns across, so the ruts show.
  */
 function buildDirtRoad(track: Track, material: THREE.Material): THREE.Mesh | null {
-  if (!track.dirt) return null;
+  if (!track.dirt && !track.def.snow) return null;
   const n = track.samples.length;
   const cols = 12;
   const asphalt = new THREE.Color(0x3d3f44);
-  const dirt = new THREE.Color(0x9b7a52);
-  const dark = new THREE.Color(0x6e5236);
+  // Packed snow is white with grey-blue ruts; dirt is brown with darker ruts.
+  const snow = !!track.def.snow;
+  const dirt = new THREE.Color(snow ? 0xeef2f6 : 0x9b7a52);
+  const dark = new THREE.Color(snow ? 0xa9b6c2 : 0x6e5236);
   const pos: number[] = [];
   const col: number[] = [];
   const idx: number[] = [];
@@ -566,7 +695,8 @@ function buildDirtRoad(track: Track, material: THREE.Material): THREE.Mesh | nul
     if (prevIncluded && rows > 0) {
       const a = (rows - 1) * (cols + 1);
       const b = rows * (cols + 1);
-      for (let j = 0; j < cols; j++) idx.push(a + j, b + j, a + j + 1, a + j + 1, b + j, b + j + 1);
+      // (No surface across a chasm.)
+      if (!gapAfter(track, (i - 1 + n) % n)) for (let j = 0; j < cols; j++) idx.push(a + j, b + j, a + j + 1, a + j + 1, b + j, b + j + 1);
     }
     rows++;
     prevIncluded = true;
@@ -592,6 +722,7 @@ function buildDirtRoad(track: Track, material: THREE.Material): THREE.Mesh | nul
  * Hay bales lined up outside the walls along the dirt section.
  */
 function buildHayBales(track: Track, terrain: Terrain): THREE.InstancedMesh | null {
+  if (track.def.snow) return buildSnowPoles(track, terrain);
   if (!track.dirt) return null;
   const n = track.samples.length;
   const rand = mulberry32(91);
@@ -623,6 +754,76 @@ function buildHayBales(track: Track, terrain: Terrain): THREE.InstancedMesh | nu
   bales.castShadow = true;
   bales.receiveShadow = true;
   return bales;
+}
+
+/**
+ * Rock cliff edges just under the chasm's lip and its landing: a few metres of bare rock with
+ * a ragged bottom, so the white road ends at a crisp rock edge you can see from the air.
+ * (Shallow: below them the ravine's own rock walls take over.)
+ */
+function buildChasmEdges(track: Track): THREE.Mesh | null {
+  if (!track.gap) return null;
+  const hw = track.def.width / 2 + track.def.wallThickness + 1.5;
+  const pos: number[] = [];
+  const col: number[] = [];
+  const idx: number[] = [];
+  const top = new THREE.Color(0x7b8088);
+  const bottom = new THREE.Color(0x3a3e44);
+  const [lip, landing] = track.gap;
+  for (const i of [lip, landing]) {
+    const s = track.samples[i];
+    const r = rightOf(s.tx, s.tz);
+    // Face the gap: the lip's face looks forward, the landing's back toward the lip.
+    const out = i === lip ? 0.05 : -0.05;
+    const cols = 14;
+    const base = pos.length / 3;
+    for (let k = 0; k <= cols; k++) {
+      const lat = -hw + (2 * hw * k) / cols;
+      const x = s.x + r.x * lat + s.tx * out;
+      const z = s.z + r.z * lat + s.tz * out;
+      const y = s.y - Math.tan(s.bank) * Math.max(-track.def.width / 2, Math.min(track.def.width / 2, lat));
+      const ragged = 3.2 + 1.6 * Math.abs(Math.sin(k * 2.7 + i)) + (k === 0 || k === cols ? -2 : 0);
+      pos.push(x, y + 0.03, z, x + s.tx * out * 20, y - ragged, z + s.tz * out * 20);
+      col.push(top.r, top.g, top.b, bottom.r, bottom.g, bottom.b);
+      if (k > 0) {
+        const a = base + (k - 1) * 2;
+        idx.push(a, a + 1, a + 2, a + 2, a + 1, a + 3);
+      }
+    }
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+  geo.setIndex(idx);
+  const flat = geo.toNonIndexed();
+  flat.computeVertexNormals();
+  const mesh = new THREE.Mesh(flat, new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true, side: THREE.DoubleSide }));
+  mesh.receiveShadow = true;
+  return mesh;
+}
+
+/** Orange marker poles along both sides of a snow road, so its edges read in snowfall and fog. */
+function buildSnowPoles(track: Track, terrain: Terrain): THREE.InstancedMesh {
+  const n = track.samples.length;
+  const spots: THREE.Matrix4[] = [];
+  for (let i = 0; i < n; i += 4) {
+    if (!onDirt(track, i) || overGap(track, i)) continue;
+    for (const [edge, side] of [
+      [track.leftEdge, -1],
+      [track.rightEdge, 1],
+    ] as const) {
+      const s = track.samples[i];
+      const r = rightOf(s.tx, s.tz);
+      const out = side * (track.def.wallThickness + 0.4);
+      const x = edge[i].x + r.x * out;
+      const z = edge[i].z + r.z * out;
+      const base = Math.max(terrain.heightAt(x, z), edge[i].y - 0.5);
+      spots.push(new THREE.Matrix4().makeTranslation(x, base + 1.1, z));
+    }
+  }
+  const poles = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.06, 0.06, 2.2, 5), new THREE.MeshLambertMaterial({ color: 0xf06a1f }), spots.length);
+  spots.forEach((m, k) => poles.setMatrixAt(k, m));
+  return poles;
 }
 
 /**
@@ -723,7 +924,7 @@ function buildCurbs(track: Track): THREE.Mesh[] {
   const red = new THREE.Color(track.def.pipe ? 0x3a78c0 : 0xd23a2e);
   const white = new THREE.Color(0xf2f2f2);
   // On dirt, a low earth berm instead of painted curbs.
-  const berm = new THREE.Color(0x7a5c3c);
+  const berm = new THREE.Color(track.def.snow ? 0xf6f9fb : 0x7a5c3c);
   const stripe = (i: number) => (onDirt(track, i) ? berm : Math.floor(i / 2) % 2 === 0 ? red : white);
   const mat = surfaceMaterial(2, { vertexColors: true });
   // A channel's lip follows the curved wall, so it's built from points on the surface.
@@ -733,7 +934,7 @@ function buildCurbs(track: Track): THREE.Mesh[] {
   };
   return [track.leftEdge, track.rightEdge].map((edge, k) => {
     const inner = track.def.pipe ? lip(k === 0 ? -1 : 1) : offsetEdge(track, edge, 0.9);
-    const mesh = new THREE.Mesh(stripGeometry(edge, inner, 0.04, stripe), mat);
+    const mesh = new THREE.Mesh(dropGapQuads(track, stripGeometry(edge, inner, 0.04, stripe)), mat);
     mesh.receiveShadow = true;
     mesh.renderOrder = ORDER.curb;
     return mesh;
@@ -848,7 +1049,8 @@ function buildWalls(track: Track): THREE.InstancedMesh {
   const q = new THREE.Quaternion();
   const e = new THREE.Euler(0, 0, 0, 'YXZ');
   const n = track.samples.length;
-  const wood = new THREE.Color(0x8a6440);
+  // Snow roads are lined with ploughed snowbanks instead.
+  const wood = new THREE.Color(track.def.snow ? 0xfafcff : 0x8a6440);
   const concrete = new THREE.Color(0xffffff);
   track.walls.forEach((w, i) => {
     // Along the dirt the walls are wooden fencing (left walls first, then right).
@@ -856,7 +1058,9 @@ function buildWalls(track: Track): THREE.InstancedMesh {
     // Tilted to the road's slope so walls run smoothly up ramps instead of stepping.
     // (Rotation about local +X tips +Z down, so climbing is a negative angle.)
     q.setFromEuler(e.set(-w.pitch, w.yaw, 0));
-    m.compose(new THREE.Vector3(w.x, w.y + (wallHeight - below) / 2, w.z), q, new THREE.Vector3(1, 1, w.length));
+    // No visible wall across a chasm (the invisible physics walls still keep cars in line).
+    const across = gapAfter(track, i % n) ? 0 : 1;
+    m.compose(new THREE.Vector3(w.x, w.y + (wallHeight - below) / 2, w.z), q, new THREE.Vector3(across, across, w.length * across));
     mesh.setMatrixAt(i, m);
   });
   // Wall shadows are barely visible but would cost ~9k triangles in the shadow pass.
@@ -1206,7 +1410,152 @@ function ribbon(bottom: Vec3[], top: Vec3[]): THREE.BufferGeometry {
  * slab, following the road's curve and slope. Visual only (cars can't leave the road there).
  * The roof casts the sun's shadow, so it's properly dim inside.
  */
-function buildTunnel(track: Track): THREE.Group | null {
+/**
+ * The mountain a snowy track's tunnel goes through: a peak rising over the middle of the tunnel,
+ * falling away along the road (so the portals sit low on its flanks) and more gently to either
+ * side. Returns the height it adds to the land at (x, z), or null when there's no such tunnel.
+ */
+function tunnelMountain(track: Track): ((x: number, z: number) => number) | null {
+  if (!track.tunnel || track.def.scenery !== 'snow') return null;
+  const n = track.samples.length;
+  const [a, b] = track.tunnel;
+  const span = (b - a + n) % n;
+  const mid = track.samples[(a + Math.round(span / 2)) % n];
+  const r = rightOf(mid.tx, mid.tz);
+  const halfLength = (span * track.length) / n / 2;
+  const peak = 40;
+  return (x: number, z: number) => {
+    const along = (x - mid.x) * mid.tx + (z - mid.z) * mid.tz;
+    const lat = (x - mid.x) * r.x + (z - mid.z) * r.z;
+    const ridge = Math.exp(-((along / (halfLength * 0.8)) ** 2)) * Math.exp(-((lat / 85) ** 2));
+    // A few crags so it isn't a perfect dome.
+    const crags = 1 + 0.12 * Math.sin(x * 0.09 + z * 0.05) + 0.08 * Math.cos(x * 0.04 - z * 0.11);
+    return peak * ridge * crags;
+  };
+}
+
+/**
+ * The mountainside over a tunnel: a surface across the road at every tunnel sample, following
+ * the mountain's shape and meeting the terrain on either side, with a rock face around each
+ * portal from the opening up to the slope.
+ */
+function mountainCover(
+  track: Track,
+  indices: number[],
+  roof: number,
+  thick: number,
+  terrain: Terrain,
+  mountain: (x: number, z: number) => number,
+): THREE.Mesh {
+  const hw = track.def.width / 2;
+  const K = 28;
+  const reach = hw + 52;
+  const snow = new THREE.Color(0xf1f4f7);
+  const rock = new THREE.Color(0x8a8e96);
+  const rockDark = new THREE.Color(0x6c7078);
+  const pos: number[] = [];
+  const col: number[] = [];
+  const idx: number[] = [];
+  const c = new THREE.Color();
+  const push = (x: number, y: number, z: number, color: THREE.Color) => {
+    pos.push(x, y, z);
+    col.push(color.r, color.g, color.b);
+    return pos.length / 3 - 1;
+  };
+  /** Cross-section point k (0 = far left, K = far right) at sample i: on the mountainside. */
+  const point = (i: number, k: number) => {
+    const s = track.samples[i];
+    const r = rightOf(s.tx, s.tz);
+    // Denser near the road, where the shape changes fastest.
+    const u = -1 + (2 * k) / K;
+    const lat = Math.sign(u) * Math.abs(u) ** 1.6 * reach;
+    const x = s.x + r.x * lat;
+    const z = s.z + r.z * lat;
+    const b = smoothstep(hw + 4, hw + 50, Math.abs(lat));
+    let y = (s.y - 0.45 + mountain(x, z)) * (1 - b) + terrain.heightAt(x, z) * b + 0.25;
+    // Always clear of the tunnel's roof, sloping down past its sides.
+    y = Math.max(y, s.y + roof + 0.8 - Math.max(0, Math.abs(lat) - (hw + thick)) * 1.2);
+    return { x, y, z };
+  };
+  const rows: number[][] = [];
+  for (const i of indices) rows.push(Array.from({ length: K + 1 }, (_, k) => {
+    const p = point(i, k);
+    return push(p.x, p.y, p.z, snow);
+  }));
+  for (let rI = 1; rI < rows.length; rI++) {
+    for (let k = 0; k < K; k++) {
+      const a = rows[rI - 1][k];
+      const b = rows[rI][k];
+      idx.push(a, b, a + 1, a + 1, b, b + 1);
+    }
+  }
+  // Portal faces: rock, from the opening's outline out to the mountainside's.
+  for (const i of [indices[0], indices[indices.length - 1]]) {
+    const s = track.samples[i];
+    const r = rightOf(s.tx, s.tz);
+    const w = hw + thick;
+    const perim = roof * 2 + 2 * w;
+    const inner: number[] = [];
+    const outer: number[] = [];
+    for (let k = 0; k <= K; k++) {
+      let d = (k / K) * perim;
+      let lat: number;
+      let up: number;
+      if (d < roof) {
+        lat = -w;
+        up = d;
+      } else if ((d -= roof) < 2 * w) {
+        lat = -w + d;
+        up = roof;
+      } else {
+        lat = w;
+        up = roof - (d - 2 * w);
+      }
+      const ix = s.x + r.x * lat;
+      const iy = s.y + up - 0.6;
+      const iz = s.z + r.z * lat;
+      inner.push(push(ix, iy, iz, rockDark));
+      // Bare rock right around the opening; further out the face is the snowy slope of the
+      // cutting the road runs in.
+      const p = point(i, k);
+      const far = smoothstep(4, 14, Math.hypot(p.x - ix, p.y - iy, p.z - iz));
+      outer.push(push(p.x, p.y, p.z, c.copy(rock).lerp(rockDark, ((k * 7) % 3) / 3).lerp(snow, far)));
+    }
+    // Rings between the opening and the slope, curving up (low near the portal, steep near
+    // the top) so the face hugs the cutting's slope instead of spanning straight across it.
+    const RINGS = 4;
+    let prev = inner;
+    for (let ring = 1; ring <= RINGS; ring++) {
+      const t = ring / RINGS;
+      const cur =
+        ring === RINGS
+          ? outer
+          : inner.map((iv, k) => {
+              const ov = outer[k];
+              const x = pos[iv * 3] + (pos[ov * 3] - pos[iv * 3]) * t;
+              const z = pos[iv * 3 + 2] + (pos[ov * 3 + 2] - pos[iv * 3 + 2]) * t;
+              const yi = pos[iv * 3 + 1];
+              const y = Math.max(yi + (pos[ov * 3 + 1] - yi) * t * t, terrain.heightAt(x, z) + 0.3);
+              const far = smoothstep(4, 14, Math.hypot(x - pos[iv * 3], y - yi, z - pos[iv * 3 + 2]));
+              return push(x, y, z, c.copy(rock).lerp(rockDark, ((k * 7 + ring) % 3) / 3).lerp(snow, far));
+            });
+      for (let k = 0; k < K; k++) idx.push(prev[k], cur[k], prev[k + 1], prev[k + 1], cur[k], cur[k + 1]);
+      prev = cur;
+    }
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+  geo.setIndex(idx);
+  const flat = geo.toNonIndexed();
+  flat.computeVertexNormals();
+  const mesh = new THREE.Mesh(flat, new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true, side: THREE.DoubleSide }));
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  return mesh;
+}
+
+function buildTunnel(track: Track, terrain: Terrain): THREE.Group | null {
   if (!track.tunnel) return null;
   const n = track.samples.length;
   const [a, b] = track.tunnel;
@@ -1260,6 +1609,11 @@ function buildTunnel(track: Track): THREE.Group | null {
     beam.castShadow = true;
     group.add(beam);
   }
+  // On a snowy track the tunnel goes through a mountain: cover it with the mountainside, with a
+  // rock face around each portal.
+  const mountain = tunnelMountain(track);
+  if (mountain) group.add(mountainCover(track, indices, height + slab, thick, terrain, mountain));
+
   const lamp = new THREE.MeshStandardMaterial({ color: 0xfff3d0, emissive: 0xffe9b0, emissiveIntensity: 1.6 });
   const lampGeo = new THREE.BoxGeometry(0.5, 0.08, 1.6);
   for (let k = 0; k < indices.length; k += 2) {

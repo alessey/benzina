@@ -211,7 +211,7 @@ export class RaceUi {
     // Collapsed: a slim bar so you can warm up without the card in the way.
     if (this.collapsed && !isResults) {
       return `<div class="card lobby-bar">
-        <span>${roomTitle} · ${v.players.size} driver${v.players.size === 1 ? '' : 's'} · ${trackName} · ${WEATHER_NAMES[v.weather]}</span>
+        <span>${roomTitle} · ${v.players.size} driver${v.players.size === 1 ? '' : 's'} · ${trackName} · ${weatherName(v.weather, v.track)}</span>
         ${v.isHost ? `<button class="primary" data-act="start">Start race</button>` : ''}
         <button data-act="expand">Show</button>
       </div>`;
@@ -263,10 +263,10 @@ export class RaceUi {
         <div class="setting weather"><span class="label-sm">Weather</span>
           ${
             v.isHost
-              ? `<div class="stepper track"><button data-act="weather-" aria-label="Previous weather">◀</button><span>${WEATHER_NAMES[v.weather]}</span><button data-act="weather+" aria-label="Next weather">▶</button></div>`
-              : `<b>${WEATHER_NAMES[v.weather]}</b>`
+              ? `<div class="stepper track"><button data-act="weather-" aria-label="Previous weather">◀</button><span>${weatherName(v.weather, v.track)}</span><button data-act="weather+" aria-label="Next weather">▶</button></div>`
+              : `<b>${weatherName(v.weather, v.track)}</b>`
           }</div>
-        <div class="muted weather-note">${WEATHER_NOTES[v.weather]}</div>
+        <div class="muted weather-note">${weatherNote(v.weather, v.track)}</div>
         ${settings}
       </section>`;
 
@@ -318,6 +318,17 @@ function escapeHtml(s: string): string {
 }
 
 /** A line of facts about a track: length, climb, features. */
+/** Weather as it applies to this track: on a snow road, rain falls as snow. */
+function weatherName(weather: Weather, track: Track): string {
+  return weather === 'rain' && track.def.snow ? 'Snowfall' : WEATHER_NAMES[weather];
+}
+
+function weatherNote(weather: Weather, track: Track): string {
+  if (weather === 'rain' && track.def.snow) return 'Fresh snow: even less grip';
+  if (weather === 'rain' && track.dirt) return 'Wet: less grip, puddles, mud on the dirt';
+  return WEATHER_NOTES[weather];
+}
+
 function trackFacts(track: Track): string {
   const facts = [`${(track.length / 1000).toFixed(2)} km`];
   if (track.bounds.maxY > 2) facts.push(`${Math.round(track.bounds.maxY)} m climb`);
@@ -327,6 +338,8 @@ function trackFacts(track: Track): string {
   if (track.def.pipe) facts.push('bobsled channel');
   if (track.steepBanks) facts.push('banked turns');
   if (track.dirt) facts.push('dirt');
+  if (track.def.snow) facts.push('snow road');
+  if (track.gap) facts.push('chasm');
   return facts.join(' · ');
 }
 

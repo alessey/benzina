@@ -209,9 +209,11 @@ export class Rain {
   /**
    * @param on raining, and the camera is out in it (not in a tunnel)
    * @param camera drops are kept around it; streaks lean back as the camera moves forward
+   * @param snow fall as snowflakes: slow, short and white
    */
-  update(on: boolean, camera: THREE.Camera, dt: number): void {
-    this.opacity += ((on ? 0.38 : 0) - this.opacity) * (1 - Math.exp(-4 * dt));
+  update(on: boolean, camera: THREE.Camera, dt: number, snow = false): void {
+    this.opacity += ((on ? (snow ? 0.85 : 0.38) : 0) - this.opacity) * (1 - Math.exp(-4 * dt));
+    (this.lines.material as THREE.LineBasicMaterial).color.setHex(snow ? 0xffffff : 0xd8e2ea);
     this.lines.visible = this.opacity > 0.01;
     (this.lines.material as THREE.LineBasicMaterial).opacity = this.opacity;
     if (!this.lines.visible) {
@@ -223,16 +225,19 @@ export class Rain {
     const move = camera.position.clone().sub(this.last);
     this.last.copy(camera.position);
     if (move.length() > 5) move.set(0, 0, 0);
-    const fall = 26 * dt;
-    const vel = new THREE.Vector3(-move.x / Math.max(dt, 1e-3), -26, -move.z / Math.max(dt, 1e-3));
-    const streak = vel.clone().multiplyScalar(0.035);
+    const speed = snow ? 4 : 26;
+    const fall = speed * dt;
+    const vel = new THREE.Vector3(-move.x / Math.max(dt, 1e-3), -speed, -move.z / Math.max(dt, 1e-3));
+    // Flakes: a short dash (stretched only by the camera's own motion), drifting sideways.
+    const streak = vel.clone().multiplyScalar(snow ? 0.012 : 0.035);
+    if (snow) streak.y -= 0.08;
     const out = this.lines.geometry.getAttribute('position') as THREE.BufferAttribute;
     const arr = out.array as Float32Array;
     const { x: bx, y: by, z: bz } = this.box;
     const c = camera.position;
     for (let i = 0; i < this.count; i++) {
       const k = i * 3;
-      let x = this.drops[k] - move.x;
+      let x = this.drops[k] - move.x + (snow ? Math.sin(i * 1.7 + this.last.y * 0.1 + performance.now() * 0.0009) * 0.6 * dt : 0);
       let y = this.drops[k + 1] - fall;
       let z = this.drops[k + 2] - move.z;
       // Wrap within the box around the camera.

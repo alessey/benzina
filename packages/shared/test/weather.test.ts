@@ -52,9 +52,9 @@ describe('weather', () => {
         slowdowns[cls].push(wet.time / dry.time - 1);
         puddleTicks += wet.puddleTicks;
       }
-      // Channels are ice (no puddles); every other track has some on the racing line (each
-      // class's line differs a little, so not every car hits one every lap).
-      if (def.pipe) expect(puddleTicks).toBe(0);
+      // Channels are ice and snow roads get snow, not puddles; every other track has some on
+      // the racing line (each class's line differs a little, so not every car hits one every lap).
+      if (def.pipe || def.snow) expect(puddleTicks).toBe(0);
       else expect(puddleTicks).toBeGreaterThan(0);
     }
     const avg = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length;
@@ -67,8 +67,8 @@ describe('weather', () => {
     }
   });
 
-  it('every track has puddles, clear of the start and the tunnel (except ice channels)', () => {
-    for (const def of TRACKS.filter((d) => !d.pipe)) {
+  it('every track has puddles, clear of the start and the tunnel (except ice channels and snow roads)', () => {
+    for (const def of TRACKS.filter((d) => !d.pipe && !d.snow)) {
       const track = buildTrack(def);
       const puddles = trackPuddles(track);
       expect(puddles.length).toBeGreaterThanOrEqual(3);

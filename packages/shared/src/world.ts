@@ -3,7 +3,7 @@ import { Car, GROUP_ROAD, HALF_L, HALF_W } from './car';
 import type { CarClass } from './cars';
 import { DEFAULT_TUNING, DT, type CarTuning } from './config';
 import { NEUTRAL_INPUT, type CarInput } from './input';
-import { crossSection, gridSlot, roadPoint, type Track, type Vec3 } from './track';
+import { crossSection, gapAfter, gridSlot, roadPoint, type Track, type Vec3 } from './track';
 import type { Weather } from './weather';
 
 const GROUND_HALF_SIZE = 2000;
@@ -284,21 +284,23 @@ function roadMesh(track: Track): [Float32Array, Uint32Array] {
   const cols = crossSection(track.def);
   const m = cols.length;
   const vertices = new Float32Array(n * m * 3);
-  const indices = new Uint32Array(n * (m - 1) * 6);
+  const indices: number[] = [];
   for (let i = 0; i < n; i++) {
     cols.forEach((f, j) => {
       const p = roadPoint(track, i, f);
       vertices.set([p.x, p.y, p.z], (i * m + j) * 3);
     });
+    // A chasm: no road across it.
+    if (gapAfter(track, i)) continue;
     const next = (i + 1) % n;
     for (let j = 0; j < m - 1; j++) {
       const a = i * m + j;
       const b = next * m + j;
       // Column j is left of j+1: (a, a+1, b) winds to face up, as for a flat strip.
-      indices.set([a, a + 1, b, a + 1, b + 1, b], (i * (m - 1) + j) * 6);
+      indices.push(a, a + 1, b, a + 1, b + 1, b);
     }
   }
-  return [vertices, indices];
+  return [vertices, new Uint32Array(indices)];
 }
 
 /** Extra invisible wall height above the visible wall, so nothing ever goes over the top. */

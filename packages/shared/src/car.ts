@@ -4,7 +4,7 @@ import { CLASS_SPECS, classTuning, type CarClass } from './cars';
 import { PUDDLE, surfaceTuning, type Weather } from './weather';
 import type { CarInput } from './input';
 import { type CarState, yawOf, yawQuat } from './state';
-import { bankGrip, nearestSampleIndex, nearestSampleIndexNear, profileHeight, profileSlope, rightOf, roadHeightAt, type Track } from './track';
+import { bankGrip, nearestSampleIndex, nearestSampleIndexNear, overGap, profileHeight, profileSlope, rightOf, roadHeightAt, type Track } from './track';
 
 const FALL_RESET_Y = -10;
 /** Bobsled channels: how strongly cornering swings a car outward, up the wall (0..1). */
@@ -15,6 +15,10 @@ const PIPE_HOLD = 12;
 const PIPE_REACH = 1.5;
 /** Bobsled channels: fastest height correction toward the ice (m/s), so it never launches. */
 const PIPE_HOLD_MAX = 3;
+/** Fallen this far below a chasm's lip-to-landing line (m), a car is reset before it. */
+const GAP_FALL = 8;
+/** Samples before a chasm's lip a car is reset to: room to build speed for the jump. */
+const GAP_RUN_UP = 20;
 /** How fast dirt scrubs off speed above its top speed (m/s²). */
 const DIRT_SCRUB = 6;
 /** Steeply banked track steeper than this (rad, ~5°) holds the car to its surface. */
@@ -482,13 +486,23 @@ export class Car {
   private belowRoad(x: number, y: number, z: number): boolean {
     this.sampleHint = nearestSampleIndexNear(this.track, x, z, this.sampleHint);
     const s = this.track.samples[this.sampleHint];
+    // Over a chasm a car's flight can dip below the line between the lip and the landing:
+    // only once it has clearly fallen in.
+    if (overGap(this.track, this.sampleHint)) return y < roadHeightAt(this.track, x, z, this.sampleHint) - GAP_FALL;
     if (Math.hypot(x - s.x, z - s.z) > this.track.def.width) return false;
     return y < roadHeightAt(this.track, x, z, this.sampleHint) - 2;
   }
 
   resetToTrack(): void {
     const pos = this.body.translation();
-    const s = this.track.samples[nearestSampleIndex(this.track, pos.x, pos.z)];
+    const n = this.track.samples.length;
+    let i = nearestSampleIndex(this.track, pos.x, pos.z);
+    // Fell into a chasm (or came to rest on its lip): back on the road well before it, for
+    // another run at the jump.
+    const gap = this.track.gap;
+    // (Including just past the landing, so falling short beside the far cliff gains nothing.)
+    if (gap && i >= gap[0] - 2 && i <= gap[1] + 4) i = (gap[0] - GAP_RUN_UP + n) % n;
+    const s = this.track.samples[i];
     this.body.setTranslation({ x: s.x, y: s.y + CAR_RIDE_HEIGHT + 0.3, z: s.z }, true);
     this.body.setRotation(yawQuat(Math.atan2(s.tx, s.tz)), true);
     this.body.setLinvel({ x: 0, y: 0, z: 0 }, true);

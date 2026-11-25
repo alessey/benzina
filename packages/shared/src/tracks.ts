@@ -327,7 +327,72 @@ export const AUTODROMO: TrackDef = {
   ],
 };
 
-export const TRACKS: readonly TrackDef[] = [CIRCUITO_UNO, COLLINE, SERPENTE, IL_SALTO, PORTO_AZZURRO, CANALONE, AUTODROMO];
+/**
+ * La Vetta: a race up a snowy mountain and back. Switchbacks climb the west face, a tunnel
+ * bores through a spur near the top, a kicker at the summit launches you over a ravine
+ * (landing a little lower than the takeoff), and a long winding descent brings you home.
+ * The whole road is packed snow; the tunnel is bare tarmac.
+ */
+export const VETTA: TrackDef = {
+  ...BASE,
+  id: 'vetta',
+  name: 'La Vetta',
+  width: 13,
+  banking: 0.5,
+  scenery: 'snow',
+  snow: true,
+  jumps: true,
+  tunnel: [13, 15],
+  gap: [22, 23],
+  controlPoints: [
+    // Start, at the foot of the mountain.
+    { x: 0, z: 0, y: 1.3 },
+    { x: 0, z: 50, y: 2.6 },
+    // First leg east, then switchbacks up the face.
+    { x: 15, z: 85, y: 5.3 },
+    { x: 50, z: 95, y: 7.9 },
+    { x: 110, z: 95, y: 13.1 },
+    { x: 150, z: 110, y: 15.8 },
+    { x: 155, z: 140, y: 18.4 },
+    { x: 125, z: 155, y: 21 },
+    { x: 70, z: 160, y: 26.3 },
+    { x: 20, z: 165, y: 31.5 },
+    { x: -15, z: 180, y: 34.2 },
+    { x: -15, z: 210, y: 36.8 },
+    { x: 15, z: 225, y: 39.4 },
+    // The tunnel, still climbing.
+    { x: 70, z: 230, y: 44.7 },
+    { x: 130, z: 235, y: 49.9 },
+    { x: 180, z: 235, y: 53.9 },
+    // Over the top.
+    { x: 225, z: 225, y: 56.5 },
+    { x: 250, z: 190, y: 57.8 },
+    { x: 252, z: 165, y: 57.8 },
+    // Summit kicker and the jump (over the ravine).
+    { x: 252, z: 141, y: 57.8 },
+    { x: 252, z: 133, y: 58.6 },
+    { x: 252, z: 127, y: 59.8 },
+    { x: 252, z: 121, y: 61.2 },
+    { x: 252, z: 99, y: 59.2 },
+    { x: 252, z: 80, y: 57.8 },
+    // The long way down: a hairpin and a run of bends back to the foot of the mountain.
+    { x: 251, z: 62, y: 56 },
+    { x: 262, z: 10, y: 52.5 },
+    { x: 272, z: -40, y: 48 },
+    { x: 258, z: -78, y: 43.8 },
+    { x: 222, z: -72, y: 39.6 },
+    { x: 195, z: -40, y: 34.6 },
+    { x: 160, z: -25, y: 29.9 },
+    { x: 128, z: -42, y: 25.4 },
+    { x: 90, z: -65, y: 20 },
+    { x: 50, z: -85, y: 14.9 },
+    { x: 22, z: -110, y: 10.9 },
+    { x: -10, z: -100, y: 7.8 },
+    { x: -8, z: -58, y: 4.5 },
+  ],
+};
+
+export const TRACKS: readonly TrackDef[] = [CIRCUITO_UNO, COLLINE, SERPENTE, IL_SALTO, PORTO_AZZURRO, CANALONE, AUTODROMO, VETTA];
 export const DEFAULT_TRACK = CIRCUITO_UNO;
 
 export function trackById(id: string | undefined): TrackDef {

@@ -516,7 +516,8 @@ function frame(now: number): void {
   world.setWeather(session.weather);
   cars.setHeadlights(world.look.headlights);
   effects.wet = world.look.wet;
-  audio.setRain(session.weather === 'rain' ? 1 : 0);
+  // On a snow road rain falls as snow: silent.
+  audio.setRain(session.weather === 'rain' && !session.track.def.snow ? 1 : 0);
   world.update(frameTime);
   renderer.render(scene, camera);
   requestAnimationFrame(frame);

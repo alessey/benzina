@@ -9,6 +9,8 @@ const DUST = new THREE.Color(0.74, 0.62, 0.46);
 const MUD = new THREE.Color(0.36, 0.28, 0.2);
 const RUBBER = new THREE.Color(0x111111);
 const RUT = new THREE.Color(0x3b2a1b);
+const POWDER = new THREE.Color(0.96, 0.97, 1);
+const SNOW_RUT = new THREE.Color(0x6f7f8e);
 /** Rear wheel contact points in car space (x across, z along). */
 const REAR_WHEELS: [number, number][] = [
   [-0.88, -1.28],
@@ -127,7 +129,7 @@ export class Effects {
           if (Math.random() > rate * dt * 60 * 0.5) continue;
           const x = p.x + fz * ox + fx * oz;
           const z = p.z - fx * ox + fz * oz;
-          this.spray(new THREE.Vector3(x, p.y - CAR_RIDE_HEIGHT + 0.1, z), v, car.puddle, car.dirt ? MUD : SPRAY);
+          this.spray(new THREE.Vector3(x, p.y - CAR_RIDE_HEIGHT + 0.1, z), v, car.puddle, car.dirt ? (this.track.def.snow ? POWDER : MUD) : SPRAY);
         }
       } else if (car.dirt && car.grounded && speed > 6) {
         const rate = Math.min(1, (speed - 6) / 30) * 0.45 + (sliding ? 0.8 : 0);
@@ -181,7 +183,7 @@ export class Effects {
     this.m.compose(mid, this.q, new THREE.Vector3(1, 1, len + 0.05));
     this.marks.setMatrixAt(this.markIndex, this.m);
     // Rubber on tarmac, a darker rut in dirt.
-    this.marks.setColorAt(this.markIndex, dirt ? RUT : RUBBER);
+    this.marks.setColorAt(this.markIndex, dirt ? (this.track.def.snow ? SNOW_RUT : RUT) : RUBBER);
     if (this.marks.instanceColor) this.marks.instanceColor.needsUpdate = true;
     this.markIndex = (this.markIndex + 1) % MAX_MARKS;
     this.marks.count = Math.max(this.marks.count, this.markIndex === 0 ? MAX_MARKS : this.markIndex);
@@ -216,7 +218,8 @@ export class Effects {
     this.smokeIndex = (i + 1) % MAX_SMOKE;
     this.smokePos.set([at.x, at.y, at.z], i * 3);
     this.smokeVel.set([v.x * 0.3 + (Math.random() - 0.5) * 1.5, 0.6 + Math.random() * 0.8, v.z * 0.3 + (Math.random() - 0.5) * 1.5], i * 3);
-    this.smokeTint.set([DUST.r, DUST.g, DUST.b], i * 3);
+    const tint = this.track.def.snow ? POWDER : DUST;
+    this.smokeTint.set([tint.r, tint.g, tint.b], i * 3);
     this.smokeAge[i] = 0.15;
   }
 
