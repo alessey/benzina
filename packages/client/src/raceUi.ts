@@ -2,6 +2,13 @@ import { CLASS_SPECS, TRACKS, WEATHER_NAMES, WEATHERS, type BotSettings, type Ca
 import { carPickerHtml, handlePickerClick, hex } from './carPicker';
 import { formatTime } from './lapTimer';
 
+/** The timing tower's running order and gaps to the leader, smoothed for display (see main.ts). */
+export interface Timing {
+  order: string[];
+  /** Seconds behind the leader, or whole laps when lapped. */
+  gaps: ReadonlyMap<string, { seconds: number; laps: number }>;
+}
+
 export interface RaceView {
   race: RaceState;
   players: ReadonlyMap<string, PlayerInfo>;
@@ -23,6 +30,8 @@ export interface RaceView {
   weather: Weather;
   /** The finish celebration is on screen (it shows the place itself). */
   celebrating: boolean;
+  /** Live running order and gaps while racing. */
+  timing: Timing;
 }
 
 /** What each weather means for the race, under its name in the lobby. */
@@ -131,13 +140,14 @@ export class RaceUi {
     this.bots = v.botSettings;
     const me = race.standings.find((s) => s.id === v.localId);
 
-    // Lap box: race info while racing, practice timer otherwise.
+    // Lap box: race info while racing, practice timer otherwise. The position follows the
+    // timing tower's steadier order, so the two always agree.
     if (me && (race.phase === 'countdown' || race.phase === 'racing')) {
       const current = race.phase === 'racing' ? (v.now - (me.started ? me.lapStartTick : race.startTick)) * TICK_SECONDS : null;
       const lap = Math.min(race.laps, me.lapsDone + 1);
       this.set(
         this.lapBox,
-        `<div class="big">P${me.position}<small>/${race.standings.length}</small> <span class="lapcount">LAP ${lap}/${race.laps}</span></div>
+        `<div class="big">P${v.timing.order.indexOf(me.id) + 1 || me.position}<small>/${race.standings.length}</small> <span class="lapcount">LAP ${lap}/${race.laps}</span></div>
          <div><span class="label">TIME</span> ${formatTime(me.finishTime ?? current)}</div>
          <div><span class="label">BEST</span> ${formatTime(me.bestLap)}</div>`,
       );
@@ -156,12 +166,27 @@ export class RaceUi {
     else if (race.phase === 'racing' && v.now - race.startTick < 50) count = 'GO!';
     this.set(this.countdown, count ? `<span class="${count === 'GO!' ? 'go' : ''}">${count}</span>` : '');
 
-    // Live standings while racing.
+    // Live standings while racing, as a dot-matrix timing tower: the leader's lap, everyone
+    // else's gap to them, finish times and gaps at the line, and the fastest lap in purple.
     if (race.phase === 'countdown' || race.phase === 'racing') {
-      const rows = race.standings
-        .map((s) => {
-          const status = s.dnf ? 'DNF' : s.finishTime !== null ? formatTime(s.finishTime) : `L${Math.min(race.laps, s.lapsDone + 1)}`;
-          return `<li class="${s.id === v.localId ? 'me' : ''}"><span>${s.position}</span>${this.name(s.id, v.players)}<em>${status}</em></li>`;
+      const winnerTime = race.standings.find((s) => s.position === 1)?.finishTime ?? null;
+      // The tower's own steadier order; anyone it doesn't know yet goes at the end.
+      const byId = new Map(race.standings.map((s) => [s.id, s]));
+      const ordered = v.timing.order.map((id) => byId.get(id)).filter((s) => s !== undefined);
+      for (const s of race.standings) if (!v.timing.order.includes(s.id)) ordered.push(s);
+      const bestLaps = race.standings.map((s) => s.bestLap).filter((l): l is number => l !== null);
+      const fastest = bestLaps.length ? Math.min(...bestLaps) : null;
+      const rows = ordered
+        .map((s, i) => {
+          const lap = `L${Math.min(race.laps, s.lapsDone + 1)}/${race.laps}`;
+          const gap = v.timing.gaps.get(s.id);
+          let status: string;
+          if (s.dnf) status = 'DNF';
+          else if (s.finishTime !== null) status = s.position === 1 || winnerTime === null ? formatTime(s.finishTime) : `+${(s.finishTime - winnerTime).toFixed(3)}`;
+          else if (i === 0 || !gap) status = lap;
+          else status = gap.laps >= 1 ? `+${gap.laps} LAP${gap.laps > 1 ? 'S' : ''}` : `+${gap.seconds.toFixed(1)}`;
+          const cls = `${s.id === v.localId ? 'me' : ''} ${s.bestLap !== null && s.bestLap === fastest ? 'fl' : ''}`;
+          return `<li class="${cls}"><span class="pos">${i + 1}</span><span class="name">${this.name(s.id, v.players).toUpperCase()}</span><em>${status}</em></li>`;
         })
         .join('');
       this.set(this.standings, `<ol>${rows}</ol>`);

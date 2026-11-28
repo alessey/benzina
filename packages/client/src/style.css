@@ -285,36 +285,78 @@ body.touch #debug {
   font-weight: 400;
   margin-left: 8px;
 }
+/* Live standings: a compact dot-matrix timing tower (amber LEDs on black). */
 #standings {
   position: absolute;
   top: calc(var(--safe-top) + 112px);
   left: var(--safe-left);
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
   font-size: 13px;
+  font-weight: 700;
 }
 #standings ol {
+  position: relative;
   list-style: none;
   margin: 0;
-  padding: 6px 8px;
-  background: rgba(0, 0, 0, 0.28);
-  border-radius: 8px;
-  min-width: 170px;
+  padding: 5px 9px;
+  min-width: 190px;
+  border-radius: 6px;
+  background: rgba(5, 5, 5, 0.82);
+  border: 2px solid #3a3a44;
+  color: #ffb000;
+  text-shadow: 0 0 3px rgba(255, 176, 0, 0.7);
+}
+/* A light mesh of LED dots over the text. */
+#standings ol::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 4px;
+  background: radial-gradient(circle, transparent 0.7px, rgba(0, 0, 0, 0.35) 1.1px);
+  background-size: 2.5px 2.5px;
+  pointer-events: none;
 }
 #standings li {
   display: flex;
   gap: 8px;
   line-height: 1.6;
 }
-#standings li span {
+#standings li .pos {
   width: 1.2em;
-  opacity: 0.7;
+  text-align: right;
+}
+#standings li .name {
+  max-width: 9ch;
+  overflow: hidden;
+  white-space: nowrap;
 }
 #standings li em {
   margin-left: auto;
+  padding-left: 10px;
   font-style: normal;
-  opacity: 0.75;
 }
 #standings li.me {
-  color: #ffd84a;
+  color: #5dff8a;
+  text-shadow: 0 0 3px rgba(93, 255, 138, 0.7);
+}
+/* Fastest lap: a purple dot by the time, as on the real timing screens. */
+#standings li.fl em::before,
+#celebration .tower li.fl .status::before {
+  content: '';
+  display: inline-block;
+  width: 0.55em;
+  height: 0.55em;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: #b14bff;
+  box-shadow: 0 0 6px #b14bff;
+  vertical-align: 0.1em;
+}
+/* Short screens (phones in landscape): the top three and you. */
+@media (max-height: 500px) {
+  #standings li:nth-child(n + 4):not(.me) {
+    display: none;
+  }
 }
 #countdown {
   position: absolute;
@@ -501,7 +543,11 @@ body.touch #standings {
   font-size: 11px;
 }
 body.touch #standings ol {
-  min-width: 130px;
+  min-width: 150px;
+}
+/* The finish tower takes the standings' place. */
+body.touch #celebration .tower {
+  top: calc(var(--safe-top) + 92px);
 }
 
 /* Menu up: hide the in-game HUD behind it. */
@@ -1206,7 +1252,7 @@ body.touch #race-panel:has(.lobby) {
   position: absolute;
   /* Over the HUD standings, which it replaces while it's up. */
   left: var(--safe-left);
-  top: calc(var(--safe-top) + 104px);
+  top: calc(var(--safe-top) + 112px);
   min-width: 230px;
   padding: 8px 10px 10px;
   border-radius: 6px;
@@ -1280,15 +1326,4 @@ body.touch #race-panel:has(.lobby) {
 #celebration .tower li.me {
   color: #5dff8a;
   text-shadow: 0 0 4px rgba(93, 255, 138, 0.9);
-}
-#celebration .tower li.fl .status::before {
-  content: '';
-  display: inline-block;
-  width: 0.55em;
-  height: 0.55em;
-  margin-right: 6px;
-  border-radius: 50%;
-  background: #b14bff;
-  box-shadow: 0 0 6px #b14bff;
-  vertical-align: 0.1em;
 }

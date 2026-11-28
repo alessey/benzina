@@ -13,7 +13,7 @@ import { AdaptiveResolution } from './quality';
 import { AudioEngine, type CarSound } from './audio';
 import { LapTimer } from './lapTimer';
 import { Connection } from './net/connection';
-import { RaceUi } from './raceUi';
+import { RaceUi, type Timing } from './raceUi';
 import { Celebration, type FinishInfo } from './celebration';
 import { getTrack, OfflineSession, OnlineSession, type Session } from './session';
 import { showStartScreen, type StartChoice } from './startScreen';
@@ -407,6 +407,82 @@ function updateWrongWay(): boolean {
   return wrongWayTicks > 30;
 }
 
+/**
+ * Running order and gaps for the timing tower. Official positions can flip back and forth
+ * several times a second while two cars run side by side, so the tower keeps its own order:
+ * each car's distance round the lap is unwrapped locally (counting line crossings ourselves,
+ * so nothing jumps while the server catches up on a lap), and a car only moves up a row once
+ * it's clearly ahead. Gaps are distance behind the leader at the leader's average race speed,
+ * never shrinking down the list. Finishers keep their official order. Updated 4x a second.
+ */
+const PASS_MARGIN = 3; // metres clear before the tower shows a pass
+const gapTrack = new Map<string, { idx: number; laps: number }>();
+let timing: Timing = { order: [], gaps: new Map() };
+let timingAt = 0;
+function updateTiming(now: number): void {
+  const race = session.race;
+  if (race.phase !== 'racing') {
+    gapTrack.clear();
+    if (timing.order.length) timing = { order: [], gaps: new Map() };
+    return;
+  }
+  if (now - timingAt < 250) return;
+  timingAt = now;
+  const track = session.track;
+  const n = track.samples.length;
+  const progress = new Map<string, number>();
+  for (const s of race.standings) {
+    const car = session.sim.cars.get(s.id);
+    if (!car || s.dnf) continue;
+    const p = car.body.translation();
+    const idx = nearestSampleIndex(track, p.x, p.z);
+    let t = gapTrack.get(s.id);
+    // First sighting: cars on the grid sit just behind the line, at the end of a lap.
+    if (!t) t = { idx, laps: idx > n / 2 ? -1 : 0 };
+    else if (t.idx > n * 0.8 && idx < n * 0.2) t.laps++;
+    else if (t.idx < n * 0.2 && idx > n * 0.8) t.laps--;
+    t.idx = idx;
+    gapTrack.set(s.id, t);
+    progress.set(s.id, t.laps * track.length + track.samples[idx].dist);
+  }
+
+  // Order: finishers as classified, then the running cars (from the last order, letting a car
+  // past only when it's clear of the one ahead), then retirements.
+  const finished = race.standings.filter((s) => s.finishTime !== null && !s.dnf).map((s) => s.id);
+  const runningIds = new Set(race.standings.filter((s) => s.finishTime === null && !s.dnf).map((s) => s.id));
+  const running = timing.order.filter((id) => runningIds.has(id));
+  for (const s of race.standings) if (runningIds.has(s.id) && !running.includes(s.id)) running.push(s.id);
+  for (let pass = 0, swapped = true; swapped && pass < running.length; pass++) {
+    swapped = false;
+    for (let i = 0; i + 1 < running.length; i++) {
+      const ahead = progress.get(running[i]);
+      const behind = progress.get(running[i + 1]);
+      if (ahead !== undefined && behind !== undefined && behind > ahead + PASS_MARGIN) {
+        [running[i], running[i + 1]] = [running[i + 1], running[i]];
+        swapped = true;
+      }
+    }
+  }
+  const order = [...finished, ...running, ...race.standings.filter((s) => s.dnf).map((s) => s.id)];
+
+  // Gaps, while the leader is still racing (they keep driving after the flag).
+  const gaps = new Map<string, { seconds: number; laps: number }>();
+  const lead = progress.get(order[0]);
+  const elapsed = (session.serverTickNow() - race.startTick) * DT;
+  const speed = lead !== undefined ? lead / Math.max(elapsed, 1e-3) : 0;
+  if (finished.length === 0 && lead !== undefined && elapsed >= 3 && speed >= 5) {
+    let prev = 0;
+    for (const id of running.slice(1)) {
+      const d = progress.get(id);
+      if (d === undefined) continue;
+      const behind = Math.max(prev, lead - d);
+      prev = behind;
+      gaps.set(id, { seconds: behind / speed, laps: Math.floor(behind / track.length) });
+    }
+  }
+  timing = { order, gaps };
+}
+
 /** Who the camera follows: our car, or (spectating) the race leader. */
 function cameraTarget(): string | null {
   if (session.localId) return session.localId;
@@ -445,6 +521,7 @@ function frame(now: number): void {
     accumulator -= DT;
   }
   wrongWay = updateWrongWay();
+  updateTiming(now);
 
   // 2. Apply the newest server snapshot (re-simulates pending inputs). This comes after the
   //    ticks so that, after a long frame, "before" and "after" describe the same moment and a
@@ -522,6 +599,7 @@ function frame(now: number): void {
     room: online?.room,
     spectating: !!online && !session.localId,
     wrongWay,
+    timing,
     practice: { current: practiceLaps.current(session.tick), last: practiceLaps.lastLap, best: practiceLaps.bestLap },
     trackId: session.track.def.id,
     track: session.track,
