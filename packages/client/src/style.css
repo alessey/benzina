@@ -958,3 +958,112 @@ body.touch #race-panel:has(.lobby) {
   margin-top: 4px;
   text-align: right;
 }
+
+/* Finish celebration: trophy, rays, confetti and the place, over the HUD but under the results card. */
+#celebration {
+  position: fixed;
+  inset: 0;
+  z-index: 5;
+  pointer-events: none;
+  --glow: 255, 255, 255;
+}
+#celebration canvas.confetti {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+#celebration .rays,
+#celebration canvas.trophy {
+  position: absolute;
+  left: 50%;
+  top: calc(var(--safe-top) + min(28vh, 220px));
+  width: min(44vh, 300px);
+  height: min(44vh, 300px);
+  transform: translate(-50%, -50%);
+}
+#celebration.finisher .rays,
+#celebration.finisher canvas.trophy {
+  display: none;
+}
+#celebration .rays {
+  width: min(80vh, 560px);
+  height: min(80vh, 560px);
+  border-radius: 50%;
+  background: repeating-conic-gradient(rgba(var(--glow), 0.32) 0deg 9deg, transparent 9deg 24deg);
+  mask-image: radial-gradient(circle, #000 15%, transparent 68%);
+  -webkit-mask-image: radial-gradient(circle, #000 15%, transparent 68%);
+  animation: cele-rays 7s linear both;
+}
+@keyframes cele-rays {
+  from {
+    transform: translate(-50%, -50%) rotate(0deg) scale(0.2);
+    opacity: 0;
+  }
+  10% {
+    transform: translate(-50%, -50%) rotate(25deg) scale(1);
+    opacity: 1;
+  }
+  to {
+    transform: translate(-50%, -50%) rotate(160deg) scale(1.1);
+    opacity: 1;
+  }
+}
+#celebration .cele-text {
+  position: absolute;
+  left: 50%;
+  top: calc(var(--safe-top) + min(28vh, 220px) + min(22vh, 150px));
+  transform: translateX(-50%);
+  text-align: center;
+  white-space: nowrap;
+  animation: cele-slam 0.5s cubic-bezier(0.2, 1.6, 0.4, 1) 0.15s both;
+}
+#celebration.finisher .cele-text {
+  top: 22%;
+  padding: 10px 28px 14px;
+  border-radius: 14px;
+  background: rgba(0, 0, 0, 0.45);
+}
+#celebration.finisher .sub {
+  background: none;
+}
+#celebration .headline {
+  font-size: clamp(36px, 9vh, 76px);
+  font-weight: 900;
+  letter-spacing: 0.06em;
+  color: rgb(var(--glow));
+  text-shadow:
+    0 0 24px rgba(var(--glow), 0.6),
+    0 4px 0 rgba(0, 0, 0, 0.35),
+    0 6px 18px rgba(0, 0, 0, 0.5);
+}
+#celebration.p1 .headline {
+  background: linear-gradient(180deg, #fff6c2 0%, #ffd84a 45%, #e0961a 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  filter: drop-shadow(0 0 18px rgba(255, 200, 60, 0.55)) drop-shadow(0 4px 6px rgba(0, 0, 0, 0.5));
+  text-shadow: none;
+}
+#celebration .sub {
+  display: inline-block;
+  margin-top: 6px;
+  padding: 3px 12px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.4);
+  font-size: clamp(14px, 2.6vh, 20px);
+  opacity: 0.95;
+}
+#celebration .gap {
+  color: #ffb4a8;
+}
+@keyframes cele-slam {
+  from {
+    transform: translateX(-50%) scale(2.6);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(-50%) scale(1);
+    opacity: 1;
+  }
+}

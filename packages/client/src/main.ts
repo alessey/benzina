@@ -14,6 +14,7 @@ import { AudioEngine, type CarSound } from './audio';
 import { LapTimer } from './lapTimer';
 import { Connection } from './net/connection';
 import { RaceUi } from './raceUi';
+import { Celebration } from './celebration';
 import { getTrack, OfflineSession, OnlineSession, type Session } from './session';
 import { showStartScreen, type StartChoice } from './startScreen';
 import { saveCar, savedCar } from './carPicker';
@@ -219,6 +220,16 @@ async function invite(): Promise<void> {
   }
 }
 
+const celebration = new Celebration();
+if (import.meta.env.DEV) {
+  // Try the finish celebration from the console: __celebrate(1)
+  Object.assign(window, {
+    __celebrate: (position = 1) => {
+      audio.fanfare(position);
+      celebration.start({ position, racers: 6, finishTime: 154.321, gap: position > 1 ? 1.234 * position : null, carColor: 0x2a7fff });
+    },
+  });
+}
 const raceUi = new RaceUi({
   start: (laps) => session.startRace(laps),
   invite: () => void invite(),
@@ -339,7 +350,17 @@ function soundCues(): void {
   const me = race.standings.find((s) => s.id === session.localId);
   if (me && race.phase === 'racing') {
     if (lastLaps >= 0 && me.lapsDone > lastLaps && me.finishTime === null) audio.chime(3);
-    if (me.finishTime !== null && !lastFinished) audio.chime(5);
+    if (me.finishTime !== null && !lastFinished) {
+      audio.fanfare(me.position);
+      const winner = race.standings.find((s) => s.position === 1);
+      celebration.start({
+        position: me.position,
+        racers: race.standings.length,
+        finishTime: me.finishTime,
+        gap: me.position > 1 && winner?.finishTime != null ? me.finishTime - winner.finishTime : null,
+        carColor: session.players.get(me.id)?.car.color ?? 0xffd84a,
+      });
+    }
     lastLaps = me.lapsDone;
     lastFinished = me.finishTime !== null;
   } else {
@@ -473,6 +494,9 @@ function frame(now: number): void {
   }
 
   soundCues();
+  // The results card takes over from the celebration.
+  if (race.phase !== 'racing') celebration.stop();
+  celebration.update(frameTime);
   const forward = new THREE.Vector3();
   camera.getWorldDirection(forward);
   audio.update(carSounds(), { position: camera.position, forward });
@@ -493,6 +517,7 @@ function frame(now: number): void {
     myCar: session.localId || session.race.phase === 'lobby' ? (session.players.get(session.localId ?? '')?.car ?? null) : null,
     botSettings: session.botSettings,
     weather: session.weather,
+    celebrating: celebration.active,
   });
 
   // Phones: the lobby/results card would cover the map, so show it only while racing there.

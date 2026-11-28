@@ -21,6 +21,8 @@ export interface RaceView {
   myCar: CarChoice | null;
   botSettings: BotSettings;
   weather: Weather;
+  /** The finish celebration is on screen (it shows the place itself). */
+  celebrating: boolean;
 }
 
 /** What each weather means for the race, under its name in the lobby. */
@@ -170,7 +172,7 @@ export class RaceUi {
     // Banner: spectating / wrong way / finish.
     let banner = '';
     if (v.spectating && race.phase !== 'lobby') banner = "Spectating: you'll join the next race";
-    else if (me?.finishTime != null && race.phase === 'racing') banner = finishMessage(me.position);
+    else if (me?.finishTime != null && race.phase === 'racing') banner = v.celebrating ? '' : finishMessage(me.position);
     else if (v.wrongWay && race.phase === 'racing') banner = '<span class="warn">WRONG WAY</span>';
     this.set(this.banner, banner);
 

@@ -293,6 +293,67 @@ export class AudioEngine {
     }
   }
 
+  /**
+   * Brassy fanfare for crossing the line: a full "ta-ta-ta-taaa" with a cymbal for a win, a
+   * shorter flourish for the podium, the finish chime otherwise.
+   */
+  fanfare(position: number): void {
+    const ctx = this.ctx;
+    if (!ctx || !this.master || !this.noise) return;
+    if (position > 3) {
+      this.chime(5);
+      return;
+    }
+    const n = (semi: number) => 392 * 2 ** (semi / 12); // semitones from G4
+    // [start beat, length in beats, semitones of each note in the chord]
+    const win: [number, number, number[]][] = [
+      [0, 0.5, [0, 4]], [0.5, 0.5, [0, 4]], [1, 0.5, [0, 4]], [1.5, 2.5, [5, 9, 12]],
+      [4, 0.5, [2, 7]], [4.5, 0.5, [4, 9]], [5, 4, [5, 9, 12, 17]],
+    ];
+    const podium: [number, number, number[]][] = [
+      [0, 0.5, [0, 4]], [0.5, 0.5, [2, 7]], [1, 3, position === 2 ? [5, 9, 12] : [4, 7, 12]],
+    ];
+    const beat = 0.15;
+    const t0 = ctx.currentTime + 0.05;
+    const out = new GainNode(ctx, { gain: position === 1 ? 0.12 : 0.09 });
+    out.connect(this.master);
+    for (const [start, len, chord] of position === 1 ? win : podium) {
+      const t = t0 + start * beat;
+      const dur = len * beat;
+      for (const semi of chord) {
+        // Two detuned saws through a filter that opens on the attack: a cheap brass section.
+        const filter = new BiquadFilterNode(ctx, { type: 'lowpass', Q: 2, frequency: 600 });
+        filter.frequency.setValueAtTime(600, t);
+        filter.frequency.linearRampToValueAtTime(3200, t + 0.04);
+        filter.frequency.exponentialRampToValueAtTime(1400, t + Math.max(0.08, dur));
+        const g = new GainNode(ctx, { gain: 0 });
+        g.gain.setValueAtTime(0, t);
+        g.gain.linearRampToValueAtTime(1 / chord.length + 0.2, t + 0.02);
+        g.gain.setValueAtTime(1 / chord.length + 0.2, t + dur * 0.8);
+        g.gain.linearRampToValueAtTime(0, t + dur + 0.12);
+        filter.connect(g).connect(out);
+        for (const detune of [-7, 7]) {
+          const osc = new OscillatorNode(ctx, { type: 'sawtooth', frequency: n(semi), detune });
+          osc.connect(filter);
+          osc.start(t);
+          osc.stop(t + dur + 0.2);
+        }
+      }
+    }
+    // Cymbal crash on the big notes.
+    const crashes = position === 1 ? [1.5, 5] : [1];
+    for (const beatAt of crashes) {
+      const t = t0 + beatAt * beat;
+      const src = new AudioBufferSourceNode(ctx, { buffer: this.noise, loop: true });
+      const g = new GainNode(ctx, { gain: 0.18 });
+      g.gain.setValueAtTime(0.18, t);
+      g.gain.exponentialRampToValueAtTime(0.001, t + 1.4);
+      src.connect(new BiquadFilterNode(ctx, { type: 'highpass', frequency: 5000 })).connect(g).connect(this.master);
+      src.start(t, Math.random() * 0.3);
+      src.stop(t + 1.5);
+    }
+  }
+
   /** Impact thump, louder for harder hits. */
   crash(intensity: number): void {
     const ctx = this.ctx;
