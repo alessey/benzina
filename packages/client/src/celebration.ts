@@ -1,9 +1,12 @@
 import * as THREE from 'three';
+import type { RacerStanding } from '@benzina/shared';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { formatTime } from './lapTimer';
 
 /** How long the celebration stays up before shrinking back to the small banner, seconds. */
 const DURATION = 7;
+/** When the race ends early (everyone else finished), cut the celebration to this length. */
+const SHORT_DURATION = 4.5;
 const FADE = 0.6;
 
 /** Trophy metal (tinted towards mirror chrome) and headline for each podium place. */
@@ -23,33 +26,42 @@ export interface FinishInfo {
   gap: number | null;
   /** Our car colour, mixed into the confetti. */
   carColor: number;
+  /** Our best lap, when it's the fastest of the race so far. */
+  fastestLap: number | null;
 }
 
 /**
- * 80s synthwave finish celebration, over CRT scanlines. The podium gets a spinning chrome
- * trophy with neon rings (gold, silver, bronze) and chrome lettering; 1st and 2nd also get a
- * striped sunset over a neon grid, and the winner gets Memphis-style confetti. Off the podium
- * it's the place and time on a neon panel.
+ * 80s synthwave finish celebration with a turbo-era F1 flavour, over CRT scanlines. The podium
+ * gets a spinning chrome trophy with neon rings (gold, silver, bronze) and chrome lettering;
+ * 1st and 2nd also get a striped sunset over a neon grid, and the winner gets a laurel wreath
+ * and Memphis-style confetti. Off the podium it's the place and time on a
+ * neon panel. Everyone gets a dot-matrix timing tower, and a purple sign for the fastest lap.
  */
 export class Celebration {
   private readonly root: HTMLDivElement;
-  private readonly confettiCanvas: HTMLCanvasElement;
+  private readonly fx: FxCanvas;
   private readonly trophyCanvas: HTMLCanvasElement;
   private readonly text: HTMLDivElement;
+  private readonly tower: HTMLDivElement;
+  private towerKey = '';
   private trophy: TrophyView | null = null;
   private confetti: Confetti | null = null;
   private time = -1;
+  private end = DURATION;
   private podium = false;
 
   constructor() {
     this.root = document.createElement('div');
     this.root.id = 'celebration';
     this.root.hidden = true;
-    this.root.innerHTML = `<div class="scanlines"></div><canvas class="confetti"></canvas><div class="sunset"><div class="sun"></div><div class="grid"></div></div><canvas class="trophy"></canvas><div class="cele-text"></div>`;
+    this.root.innerHTML = `<div class="scanlines"></div><div class="sunset"><div class="sun"></div><div class="grid"></div></div>
+      <div class="wreath"></div><canvas class="trophy"></canvas><div class="cele-text"></div>
+      <div class="tower"></div><canvas class="fx"></canvas>`;
     document.body.appendChild(this.root);
-    this.confettiCanvas = this.root.querySelector('canvas.confetti')!;
+    this.fx = new FxCanvas(this.root.querySelector('canvas.fx')!);
     this.trophyCanvas = this.root.querySelector('canvas.trophy')!;
     this.text = this.root.querySelector('.cele-text')!;
+    this.tower = this.root.querySelector('.tower')!;
   }
 
   get active(): boolean {
@@ -60,17 +72,23 @@ export class Celebration {
     const place = PODIUM[info.position - 1];
     this.podium = !!place;
     this.time = 0;
+    this.end = DURATION;
     this.root.hidden = false;
     this.root.style.opacity = '1';
-    this.root.className = `${this.podium ? `podium p${info.position}` : 'finisher'}${info.position <= 2 ? ' stage' : ''}`;
+    this.root.className = `${this.podium ? `podium p${info.position}` : 'finisher'}${info.position <= 2 ? ' stage' : ''}${info.position === 1 ? ' winner' : ''}`;
 
     const time = info.finishTime !== null ? formatTime(info.finishTime) : '';
     const gap = info.gap !== null ? `+${info.gap.toFixed(3)}s` : '';
     const headline = place ? place.label : `${ordinal(info.position).toUpperCase()} PLACE`;
     this.text.innerHTML = `<div class="headline">${headline}</div>
-      <div class="sub">${ordinal(info.position)} of ${info.racers}${time ? ` · ${time}` : ''}${gap ? ` · <span class="gap">${gap}</span>` : ''}</div>`;
+      <div class="sub">${ordinal(info.position)} of ${info.racers}${time ? ` · ${time}` : ''}${gap ? ` · <span class="gap">${gap}</span>` : ''}</div>
+      ${info.fastestLap !== null ? `<div class="fastest">FASTEST LAP <b>${formatTime(info.fastestLap)}</b></div>` : ''}`;
+    this.tower.innerHTML = '';
+    this.towerKey = '';
+    // A fresh wreath replays the leaf-by-leaf growth.
+    this.root.querySelector('.wreath')!.innerHTML = info.position === 1 ? wreathSvg() : '';
     // Restart the CSS entrance animations.
-    for (const el of this.root.querySelectorAll<HTMLElement>('.cele-text, .sunset, .cele-text .sub')) {
+    for (const el of this.root.querySelectorAll<HTMLElement>('.cele-text, .sunset, .cele-text .sub, .tower')) {
       el.style.animation = 'none';
       void el.offsetWidth;
       el.style.animation = '';
@@ -81,28 +99,113 @@ export class Celebration {
       this.trophy.show(place.metal, info.position);
     }
     // Confetti is for the winner only.
-    this.confetti = info.position === 1 ? new Confetti(this.confettiCanvas, [...NEON, `#${info.carColor.toString(16).padStart(6, '0')}`]) : null;
+    this.confetti = info.position === 1 ? new Confetti([...NEON, `#${info.carColor.toString(16).padStart(6, '0')}`]) : null;
+  }
+
+  /** Wrap up sooner (the results card is waiting), but not before a short celebration has played. */
+  hurry(): void {
+    this.end = Math.min(this.end, Math.max(SHORT_DURATION, this.time + FADE));
   }
 
   stop(): void {
     if (this.time < 0) return;
     this.time = -1;
     this.root.hidden = true;
-    this.confetti?.clear();
+    this.fx.clear();
     this.confetti = null;
+  }
+
+  /**
+   * Fill the timing tower from the live standings (call every frame while active: it only
+   * touches the DOM when something changes, e.g. another car crosses the line).
+   */
+  setStandings(standings: readonly RacerStanding[], nameOf: (id: string) => string, localId: string | null, laps: number): void {
+    if (this.time < 0) return;
+    const leader = standings.find((s) => s.position === 1)?.finishTime ?? null;
+    const laps_ = standings.map((s) => s.bestLap).filter((l): l is number => l !== null);
+    const fastest = laps_.length ? Math.min(...laps_) : null;
+    const rows = standings.map((s) => {
+      const status = s.dnf
+        ? 'DNF'
+        : s.finishTime === null
+          ? `LAP ${Math.min(laps, s.lapsDone + 1)}`
+          : s.position === 1 || leader === null
+            ? formatTime(s.finishTime)
+            : `+${(s.finishTime - leader).toFixed(3)}`;
+      const name = nameOf(s.id).toUpperCase().slice(0, 9);
+      const cls = `${s.id === localId ? 'me' : ''} ${s.bestLap !== null && s.bestLap === fastest ? 'fl' : ''}`;
+      return `<li class="${cls}"><span class="pos">${s.position}</span><span class="name">${escapeHtml(name)}</span><span class="status">${status}</span></li>`;
+    });
+    const key = rows.join('');
+    if (key === this.towerKey) return;
+    // Rows type in one by one the first time; later changes just update.
+    const live = this.towerKey !== '';
+    this.towerKey = key;
+    this.tower.innerHTML = `<div class="tower-head">CLASSIFICATION</div><ol class="${live ? 'live' : ''}">${rows
+      .map((r, i) => r.replace('<li ', `<li style="--i:${i}" `))
+      .join('')}</ol>`;
   }
 
   update(dt: number): void {
     if (this.time < 0) return;
     this.time += dt;
-    if (this.time >= DURATION) {
+    if (this.time >= this.end) {
       this.stop();
       return;
     }
-    this.root.style.opacity = String(Math.min(1, (DURATION - this.time) / FADE));
+    this.root.style.opacity = String(Math.min(1, (this.end - this.time) / FADE));
     if (this.podium) this.trophy?.render(this.time);
-    this.confetti?.update(dt, this.time);
+    if (this.confetti) this.confetti.update(this.fx.begin(), dt, this.time, this.fx.w, this.fx.h);
   }
+}
+
+function escapeHtml(s: string): string {
+  return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
+}
+
+/**
+ * Laurel wreath, as worn on 80s podiums: two neon-green branches of leaf pairs curving up
+ * from a pink ribbon. Each leaf has its own animation delay so the wreath grows in.
+ */
+function wreathSvg(): string {
+  const R = 82;
+  const n = 11;
+  const deg = Math.PI / 180;
+  const leaves: string[] = [];
+  let k = 0;
+  for (const mirror of [false, true]) {
+    for (let i = 0; i < n; i++) {
+      // The left branch runs from just left of the bottom (100°) round to the top left (240°),
+      // in SVG angles (y down); the right branch mirrors it.
+      const a = (100 + (i / (n - 1)) * 140) * deg;
+      const size = 1 - (i / n) * 0.45;
+      // Leaves point along the branch, one leaning out and one in.
+      const along = Math.atan2(Math.cos(a), -Math.sin(a)) / deg - 90;
+      for (const [off, lean] of [[6, -35], [-6, 35]]) {
+        let x = (R + off) * Math.cos(a);
+        const y = (R + off) * Math.sin(a);
+        let rot = along + lean;
+        if (mirror) {
+          x = -x;
+          rot = -rot;
+        }
+        // Placed by the group, so the leaf's own grow animation scales it about its centre.
+        leaves.push(
+          `<g transform="translate(${x.toFixed(1)} ${y.toFixed(1)}) rotate(${rot.toFixed(1)})"><ellipse class="leaf" style="animation-delay:${(0.25 + (k++ % (n * 2)) * 0.035).toFixed(3)}s" rx="${(4.6 * size).toFixed(1)}" ry="${(12 * size).toFixed(1)}"/></g>`,
+        );
+      }
+    }
+  }
+  const p0 = [R * Math.cos(100 * deg), R * Math.sin(100 * deg)].map((v) => v.toFixed(1));
+  const p1 = [R * Math.cos(240 * deg), R * Math.sin(240 * deg)].map((v) => v.toFixed(1));
+  return `<svg viewBox="-110 -110 220 220" aria-hidden="true">
+    <defs><linearGradient id="leafg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#d8ff9a"/><stop offset="1" stop-color="#1fae5a"/></linearGradient></defs>
+    <path class="stem" d="M ${p0[0]} ${p0[1]} A ${R} ${R} 0 0 1 ${p1[0]} ${p1[1]}"/>
+    <path class="stem" d="M ${-p0[0]} ${p0[1]} A ${R} ${R} 0 0 0 ${-p1[0]} ${p1[1]}"/>
+    <g fill="url(#leafg)">${leaves.join('')}</g>
+    <path class="ribbon" d="M -6 ${R - 4} L -30 ${R + 24} L -20 ${R + 21} L -16 ${R + 30} L 2 ${R + 4} Z M 6 ${R - 4} L 30 ${R + 24} L 20 ${R + 21} L 16 ${R + 30} L -2 ${R + 4} Z"/>
+    <circle class="ribbon" cx="0" cy="${R - 1}" r="8"/>
+  </svg>`;
 }
 
 function ordinal(n: number): string {
@@ -277,6 +380,39 @@ function glintTexture(): THREE.Texture {
   return tex;
 }
 
+/** Full-screen 2D canvas for the confetti, at device resolution. */
+class FxCanvas {
+  readonly ctx: CanvasRenderingContext2D;
+  w = 0;
+  h = 0;
+  private dpr = 1;
+
+  constructor(private readonly canvas: HTMLCanvasElement) {
+    this.ctx = canvas.getContext('2d')!;
+  }
+
+  /** Resize if needed and clear; returns the context in CSS pixels. */
+  begin(): CanvasRenderingContext2D {
+    this.dpr = Math.min(window.devicePixelRatio, 2);
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    if (w !== this.w || h !== this.h) {
+      this.w = w;
+      this.h = h;
+      this.canvas.width = w * this.dpr;
+      this.canvas.height = h * this.dpr;
+    }
+    this.ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+    this.ctx.clearRect(0, 0, w, h);
+    return this.ctx;
+  }
+
+  clear(): void {
+    this.ctx.setTransform(1, 0, 0, 1, 0, 0);
+    this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+  }
+}
+
 interface Piece {
   x: number;
   y: number;
@@ -298,34 +434,15 @@ interface Piece {
  * both bottom corners, then a light drizzle from the top.
  */
 class Confetti {
-  private readonly ctx: CanvasRenderingContext2D;
   private readonly pieces: Piece[] = [];
-  private w = 0;
-  private h = 0;
-  private dpr = 1;
-  private drizzle = 0;
+  private fired = false;
+  private due = 0;
 
-  constructor(
-    private readonly canvas: HTMLCanvasElement,
-    private readonly colors: string[],
-  ) {
-    this.ctx = canvas.getContext('2d')!;
-    this.resize();
-    const n = 160;
-    for (const side of [0, 1]) {
-      for (let i = 0; i < n; i++) {
-        const angle = (side === 0 ? -1 : 1) * (0.25 + Math.random() * 0.45); // from vertical
-        const speed = this.h * (1.1 + Math.random() * 0.9);
-        this.pieces.push(
-          this.piece(side === 0 ? -10 : this.w + 10, this.h + 10, Math.sin(angle) * speed, -Math.cos(angle) * speed),
-        );
-      }
-    }
-  }
+  constructor(private readonly colors: string[]) {}
 
-  private piece(x: number, y: number, vx: number, vy: number): Piece {
-    const s = Math.min(this.w, this.h) / 90;
-    return {
+  private add(x: number, y: number, vx: number, vy: number, w: number, h: number): void {
+    const s = Math.min(w, h) / 90;
+    this.pieces.push({
       x,
       y,
       vx,
@@ -337,35 +454,28 @@ class Confetti {
       r: s * (0.8 + Math.random() * 0.6),
       color: this.colors[Math.floor(Math.random() * this.colors.length)],
       shape: Math.floor(Math.random() * 4),
-    };
+    });
   }
 
-  private resize(): void {
-    this.dpr = Math.min(window.devicePixelRatio, 2);
-    const w = window.innerWidth;
-    const h = window.innerHeight;
-    if (w === this.w && h === this.h) return;
-    this.w = w;
-    this.h = h;
-    this.canvas.width = w * this.dpr;
-    this.canvas.height = h * this.dpr;
-  }
-
-  update(dt: number, t: number): void {
-    this.resize();
+  update(ctx: CanvasRenderingContext2D, dt: number, t: number, w: number, h: number): void {
     const step = Math.min(dt, 1 / 30);
-    // Keep a gentle fall going for a few seconds after the burst.
-    if (t > 0.6 && t < 4.5) {
-      this.drizzle += step * 40;
-      while (this.drizzle >= 1) {
-        this.drizzle--;
-        this.pieces.push(this.piece(Math.random() * this.w, -20, (Math.random() - 0.5) * 40, 40 + Math.random() * 60));
+    if (!this.fired) {
+      // Fired on the first frame, once the canvas knows the screen size.
+      this.fired = true;
+      for (const side of [-1, 1]) {
+        for (let i = 0; i < 160; i++) {
+          const angle = side * (0.25 + Math.random() * 0.45); // from vertical
+          const speed = h * (1.1 + Math.random() * 0.9);
+          this.add(side < 0 ? -10 : w + 10, h + 10, Math.sin(angle) * speed, -Math.cos(angle) * speed, w, h);
+        }
       }
     }
-    const gravity = this.h * 1.5;
-    const ctx = this.ctx;
-    ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
-    ctx.clearRect(0, 0, this.w, this.h);
+    // Keep a gentle fall going for a few seconds after the burst.
+    if (t > 0.6 && t < 4.5) {
+      this.due += step * 40;
+      for (; this.due >= 1; this.due--) this.add(Math.random() * w, -20, (Math.random() - 0.5) * 40, 40 + Math.random() * 60, w, h);
+    }
+    const gravity = h * 1.5;
     let alive = 0;
     for (const p of this.pieces) {
       // Paper: strong air drag, falls at a slow terminal speed and flutters sideways.
@@ -376,7 +486,7 @@ class Confetti {
       p.y += p.vy * step;
       p.rot += p.spin * step;
       p.flip += p.flipSpeed * step;
-      if (p.y > this.h + 40) continue;
+      if (p.y > h + 40) continue;
       this.pieces[alive++] = p;
       ctx.save();
       ctx.translate(p.x, p.y);
@@ -388,11 +498,6 @@ class Confetti {
       ctx.restore();
     }
     this.pieces.length = alive;
-  }
-
-  clear(): void {
-    this.ctx.setTransform(1, 0, 0, 1, 0, 0);
-    this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
   }
 }
 

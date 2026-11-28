@@ -177,7 +177,8 @@ export class RaceUi {
     this.set(this.banner, banner);
 
     // Lobby and results card. While it's open, the arrow keys orbit the camera.
-    this.cardOpen = (race.phase === 'lobby' && !this.collapsed) || race.phase === 'results';
+    // The results card waits for the finish celebration to end.
+    this.cardOpen = (race.phase === 'lobby' && !this.collapsed) || (race.phase === 'results' && !v.celebrating);
     const panelKey = JSON.stringify([
       race.phase,
       v.trackId,
@@ -191,6 +192,7 @@ export class RaceUi {
       this.laps,
       [...v.players.values()].map((p) => p.name),
       race.phase === 'results' ? race.standings : null,
+      v.celebrating,
       race.phase === 'results' ? Math.ceil((race.phaseEndsTick - v.now) / 60) : 0,
     ]);
     if (panelKey !== this.lastPanelKey) {
@@ -205,6 +207,7 @@ export class RaceUi {
     const { race } = v;
     const isResults = race.phase === 'results';
     if (race.phase !== 'lobby' && !isResults) return '';
+    if (isResults && v.celebrating) return '';
 
     const trackName = escapeHtml(TRACKS.find((t) => t.id === v.trackId)?.name ?? v.trackId);
     const hasBots = [...v.players.values()].some((p) => p.bot);

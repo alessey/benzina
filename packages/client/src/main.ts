@@ -234,6 +234,7 @@ if (import.meta.env.DEV) {
       finishTime: 154.321,
       gap: position > 1 ? 1.234 * position : null,
       carColor: 0x2a7fff,
+      fastestLap: position <= 2 ? 51.204 : null,
     }),
   });
 }
@@ -359,12 +360,14 @@ function soundCues(): void {
     if (lastLaps >= 0 && me.lapsDone > lastLaps && me.finishTime === null) audio.chime(3);
     if (me.finishTime !== null && !lastFinished) {
       const winner = race.standings.find((s) => s.position === 1);
+      const bestLaps = race.standings.map((s) => s.bestLap).filter((l): l is number => l !== null);
       celebrate({
         position: me.position,
         racers: race.standings.length,
         finishTime: me.finishTime,
         gap: me.position > 1 && winner?.finishTime != null ? me.finishTime - winner.finishTime : null,
         carColor: session.players.get(me.id)?.car.color ?? 0xffd84a,
+        fastestLap: me.bestLap !== null && me.bestLap <= Math.min(...bestLaps) ? me.bestLap : null,
       });
     }
     lastLaps = me.lapsDone;
@@ -500,8 +503,10 @@ function frame(now: number): void {
   }
 
   soundCues();
-  // The results card takes over from the celebration.
-  if (race.phase !== 'racing') celebration.stop();
+  // When the race ends the celebration wraps up early and the results card follows it.
+  if (race.phase === 'results') celebration.hurry();
+  else if (race.phase !== 'racing') celebration.stop();
+  celebration.setStandings(race.standings, (id) => session.players.get(id)?.name ?? `Car ${id}`, session.localId, race.laps);
   celebration.update(frameTime);
   const forward = new THREE.Vector3();
   camera.getWorldDirection(forward);

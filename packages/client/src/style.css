@@ -979,7 +979,7 @@ body.touch #race-panel:has(.lobby) {
     opacity: 0.85;
   }
 }
-#celebration canvas.confetti {
+#celebration canvas.fx {
   position: absolute;
   inset: 0;
   width: 100%;
@@ -1133,4 +1133,162 @@ body.touch #race-panel:has(.lobby) {
   5%, 16%, 30%, 100% {
     opacity: 1;
   }
+}
+
+/* Laurel wreath round the winner's trophy, growing in leaf by leaf. */
+#celebration .wreath {
+  display: none;
+}
+#celebration.winner .wreath {
+  display: block;
+  position: absolute;
+  left: 50%;
+  top: calc(var(--safe-top) + min(28vh, 220px) + min(2vh, 12px));
+  width: min(46vh, 320px);
+  height: min(46vh, 320px);
+  transform: translate(-50%, -50%);
+  filter: drop-shadow(0 0 6px rgba(120, 255, 140, 0.8));
+}
+#celebration .wreath svg {
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+#celebration .wreath .leaf {
+  stroke: #eaffd0;
+  stroke-width: 0.8;
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: leaf-grow 0.35s cubic-bezier(0.3, 1.6, 0.5, 1) both;
+}
+@keyframes leaf-grow {
+  from {
+    scale: 0;
+  }
+  to {
+    scale: 1;
+  }
+}
+#celebration .wreath .stem {
+  fill: none;
+  stroke: #1fae5a;
+  stroke-width: 2.5;
+}
+#celebration .wreath .ribbon {
+  fill: #ff2bd6;
+  stroke: #ffc4f2;
+  stroke-width: 1;
+}
+
+/* Purple is the fastest-lap colour on the timing screens. */
+#celebration .fastest {
+  display: block;
+  width: max-content;
+  margin: 8px auto 0;
+  padding: 3px 12px;
+  border-radius: 8px;
+  font-size: clamp(12px, 2.2vh, 16px);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: #e3b8ff;
+  background: rgba(30, 0, 50, 0.65);
+  border: 1px solid rgba(177, 75, 255, 0.8);
+  box-shadow: 0 0 14px rgba(177, 75, 255, 0.7);
+  text-shadow: 0 0 6px #b14bff, 0 0 14px rgba(177, 75, 255, 0.9);
+  animation: neon-on 0.9s linear 1s both;
+}
+#celebration .fastest b {
+  color: #fff;
+}
+
+/* Dot-matrix timing tower: amber LEDs on black, typed in row by row. */
+#celebration .tower {
+  position: absolute;
+  /* Over the HUD standings, which it replaces while it's up. */
+  left: var(--safe-left);
+  top: calc(var(--safe-top) + 104px);
+  min-width: 230px;
+  padding: 8px 10px 10px;
+  border-radius: 6px;
+  background: #050505;
+  border: 2px solid #3a3a44;
+  box-shadow: 0 0 0 1px #000, 0 8px 24px rgba(0, 0, 0, 0.6), inset 0 0 18px rgba(255, 140, 0, 0.08);
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  font-weight: 700;
+  font-size: clamp(11px, 2.3vh, 16px);
+  color: #ffb000;
+  text-shadow: 0 0 4px rgba(255, 176, 0, 0.9);
+  animation: tower-in 0.45s cubic-bezier(0.2, 1, 0.3, 1) 1.2s both;
+}
+#celebration .tower:empty {
+  display: none;
+}
+@keyframes tower-in {
+  from {
+    transform: translateX(-130%);
+  }
+}
+/* A dark mesh over the text, so it reads as a grid of LED dots. */
+#celebration .tower::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 4px;
+  background: radial-gradient(circle, transparent 0.7px, rgba(0, 0, 0, 0.6) 1.1px);
+  background-size: 2.5px 2.5px;
+  pointer-events: none;
+}
+#celebration .tower-head {
+  margin-bottom: 4px;
+  padding-bottom: 4px;
+  border-bottom: 2px solid #ffb000;
+  letter-spacing: 0.18em;
+  font-size: 0.9em;
+}
+#celebration .tower ol {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+#celebration .tower li {
+  display: flex;
+  gap: 10px;
+  line-height: 1.55;
+  animation: tower-row 0.01s linear calc(1.5s + var(--i) * 0.12s) both;
+}
+#celebration .tower ol.live li {
+  animation: none;
+}
+@keyframes tower-row {
+  from {
+    visibility: hidden;
+  }
+  to {
+    visibility: visible;
+  }
+}
+#celebration .tower .pos {
+  width: 1.4em;
+  text-align: right;
+}
+#celebration .tower .name {
+  flex: 1;
+}
+#celebration .tower .status {
+  text-align: right;
+}
+#celebration .tower li.me {
+  color: #5dff8a;
+  text-shadow: 0 0 4px rgba(93, 255, 138, 0.9);
+}
+#celebration .tower li.fl .status::before {
+  content: '';
+  display: inline-block;
+  width: 0.55em;
+  height: 0.55em;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: #b14bff;
+  box-shadow: 0 0 6px #b14bff;
+  vertical-align: 0.1em;
 }
