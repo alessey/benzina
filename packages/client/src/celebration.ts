@@ -6,11 +6,14 @@ import { formatTime } from './lapTimer';
 const DURATION = 7;
 const FADE = 0.6;
 
+/** Trophy metal (tinted towards mirror chrome) and headline for each podium place. */
 const PODIUM = [
-  { metal: 0xffc93c, glow: '255, 201, 60', label: 'YOU WON!' },
-  { metal: 0xd9dde3, glow: '220, 228, 240', label: '2ND PLACE' },
-  { metal: 0xc77b3f, glow: '214, 136, 80', label: '3RD PLACE' },
+  { metal: 0xffc93c, label: 'WINNER!' },
+  { metal: 0xd9dde3, label: '2ND PLACE' },
+  { metal: 0xc77b3f, label: '3RD PLACE' },
 ];
+
+const NEON = ['#ff2bd6', '#00f0ff', '#fff200', '#ff7a00', '#b14bff'];
 
 export interface FinishInfo {
   position: number;
@@ -23,9 +26,10 @@ export interface FinishInfo {
 }
 
 /**
- * Finish-line celebration: a spinning 3D trophy (gold, silver, bronze) over rotating light
- * rays, confetti cannons, and the place and time slammed onto the screen. Off the podium it
- * just shows the place and time.
+ * 80s synthwave finish celebration, over CRT scanlines. The podium gets a spinning chrome
+ * trophy with neon rings (gold, silver, bronze) and chrome lettering; 1st and 2nd also get a
+ * striped sunset over a neon grid, and the winner gets Memphis-style confetti. Off the podium
+ * it's the place and time on a neon panel.
  */
 export class Celebration {
   private readonly root: HTMLDivElement;
@@ -41,7 +45,7 @@ export class Celebration {
     this.root = document.createElement('div');
     this.root.id = 'celebration';
     this.root.hidden = true;
-    this.root.innerHTML = `<canvas class="confetti"></canvas><div class="rays"></div><canvas class="trophy"></canvas><div class="cele-text"></div>`;
+    this.root.innerHTML = `<div class="scanlines"></div><canvas class="confetti"></canvas><div class="sunset"><div class="sun"></div><div class="grid"></div></div><canvas class="trophy"></canvas><div class="cele-text"></div>`;
     document.body.appendChild(this.root);
     this.confettiCanvas = this.root.querySelector('canvas.confetti')!;
     this.trophyCanvas = this.root.querySelector('canvas.trophy')!;
@@ -58,8 +62,7 @@ export class Celebration {
     this.time = 0;
     this.root.hidden = false;
     this.root.style.opacity = '1';
-    this.root.className = this.podium ? `podium p${info.position}` : 'finisher';
-    if (place) this.root.style.setProperty('--glow', place.glow);
+    this.root.className = `${this.podium ? `podium p${info.position}` : 'finisher'}${info.position <= 2 ? ' stage' : ''}`;
 
     const time = info.finishTime !== null ? formatTime(info.finishTime) : '';
     const gap = info.gap !== null ? `+${info.gap.toFixed(3)}s` : '';
@@ -67,7 +70,7 @@ export class Celebration {
     this.text.innerHTML = `<div class="headline">${headline}</div>
       <div class="sub">${ordinal(info.position)} of ${info.racers}${time ? ` · ${time}` : ''}${gap ? ` · <span class="gap">${gap}</span>` : ''}</div>`;
     // Restart the CSS entrance animations.
-    for (const el of [this.text, this.root.querySelector<HTMLElement>('.rays')!]) {
+    for (const el of this.root.querySelectorAll<HTMLElement>('.cele-text, .sunset, .cele-text .sub')) {
       el.style.animation = 'none';
       void el.offsetWidth;
       el.style.animation = '';
@@ -76,11 +79,9 @@ export class Celebration {
     if (place) {
       this.trophy ??= new TrophyView(this.trophyCanvas);
       this.trophy.show(place.metal, info.position);
-      const colors = ['#ffd84a', '#ff4d6d', '#4dd6ff', '#7dff6a', '#ffffff', '#b77bff', `#${info.carColor.toString(16).padStart(6, '0')}`];
-      this.confetti = new Confetti(this.confettiCanvas, colors, info.position === 1 ? 1 : 0.5);
-    } else {
-      this.confetti = null;
     }
+    // Confetti is for the winner only.
+    this.confetti = info.position === 1 ? new Confetti(this.confettiCanvas, [...NEON, `#${info.carColor.toString(16).padStart(6, '0')}`]) : null;
   }
 
   stop(): void {
@@ -117,7 +118,7 @@ class TrophyView {
   private readonly scene = new THREE.Scene();
   private readonly camera = new THREE.PerspectiveCamera(30, 1, 0.1, 50);
   private readonly group = new THREE.Group();
-  private readonly metal = new THREE.MeshStandardMaterial({ metalness: 1, roughness: 0.18 });
+  private readonly metal = new THREE.MeshStandardMaterial({ metalness: 1, roughness: 0.06 });
   private readonly plaque: THREE.CanvasTexture;
   private readonly plaqueCtx: CanvasRenderingContext2D;
   private readonly sparkles: THREE.Sprite[] = [];
@@ -129,10 +130,16 @@ class TrophyView {
     const pmrem = new THREE.PMREMGenerator(this.renderer);
     this.scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
     pmrem.dispose();
+    // Dim studio reflections, so the magenta and cyan lights show in the chrome.
+    this.scene.environmentIntensity = 0.45;
 
-    const key = new THREE.DirectionalLight(0xffffff, 2.5);
+    const key = new THREE.DirectionalLight(0xffffff, 1.2);
     key.position.set(3, 5, 4);
-    this.scene.add(key, new THREE.AmbientLight(0xffffff, 0.3));
+    const pink = new THREE.DirectionalLight(0xff2bd6, 4);
+    pink.position.set(-4, 1, 2);
+    const cyan = new THREE.DirectionalLight(0x00f0ff, 4);
+    cyan.position.set(4, 0.5, 1);
+    this.scene.add(key, pink, cyan, new THREE.AmbientLight(0xffffff, 0.3));
     this.camera.position.set(0, 1.6, 7.2);
     this.camera.lookAt(0, 1.35, 0);
 
@@ -143,6 +150,23 @@ class TrophyView {
     ].map(([x, y]) => new THREE.Vector2(x, y));
     const cup = new THREE.Mesh(new THREE.LatheGeometry(profile, 48), this.metal);
     this.group.add(cup);
+    // Neon tubes: rings round the cup and strips round the plinth.
+    const tube = (color: number) => new THREE.MeshBasicMaterial({ color, toneMapped: false });
+    const neonCyan = tube(0x00f0ff);
+    const neonPink = tube(0xff2bd6);
+    const neon = new THREE.Group();
+    for (const [y, r, t] of [[2.71, 0.9, 0.035], [2.3, 0.8, 0.028], [1.62, 0.41, 0.025], [1.22, 0.21, 0.025]]) {
+      const ring = new THREE.Mesh(new THREE.TorusGeometry(r + 0.01, t, 8, 64), neonCyan);
+      ring.rotation.x = Math.PI / 2;
+      ring.position.y = y;
+      neon.add(ring);
+    }
+    for (const y of [0.04, 0.6]) {
+      const strip = new THREE.Mesh(new THREE.BoxGeometry(1.3, 0.05, 1.3), neonPink);
+      strip.position.y = y;
+      neon.add(strip);
+    }
+    this.group.add(neon);
     // Handles: half rings either side of the bowl.
     const handleGeo = new THREE.TorusGeometry(0.34, 0.055, 12, 32, Math.PI * 1.15);
     for (const side of [-1, 1]) {
@@ -183,7 +207,8 @@ class TrophyView {
   }
 
   show(color: number, position: number): void {
-    this.metal.color.setHex(color);
+    // Mirror chrome, tinted by the place.
+    this.metal.color.setHex(color).lerp(new THREE.Color(0xffffff), 0.35);
     const ctx = this.plaqueCtx;
     const g = ctx.createLinearGradient(0, 0, 0, 128);
     g.addColorStop(0, `#${new THREE.Color(color).offsetHSL(0, 0, 0.15).getHexString()}`);
@@ -261,13 +286,17 @@ interface Piece {
   spin: number;
   flip: number;
   flipSpeed: number;
-  w: number;
-  h: number;
+  /** Size, px. */
+  r: number;
   color: string;
-  ribbon: boolean;
+  /** Memphis shapes: 0 triangle, 1 ring, 2 squiggle, 3 square. */
+  shape: number;
 }
 
-/** Paper confetti fired from cannons in both bottom corners, then a light drizzle from the top. */
+/**
+ * 80s Memphis-pattern confetti (triangles, rings, squiggles, squares) fired from cannons in
+ * both bottom corners, then a light drizzle from the top.
+ */
 class Confetti {
   private readonly ctx: CanvasRenderingContext2D;
   private readonly pieces: Piece[] = [];
@@ -279,11 +308,10 @@ class Confetti {
   constructor(
     private readonly canvas: HTMLCanvasElement,
     private readonly colors: string[],
-    private readonly amount: number,
   ) {
     this.ctx = canvas.getContext('2d')!;
     this.resize();
-    const n = Math.round(160 * amount);
+    const n = 160;
     for (const side of [0, 1]) {
       for (let i = 0; i < n; i++) {
         const angle = (side === 0 ? -1 : 1) * (0.25 + Math.random() * 0.45); // from vertical
@@ -296,7 +324,6 @@ class Confetti {
   }
 
   private piece(x: number, y: number, vx: number, vy: number): Piece {
-    const ribbon = Math.random() < 0.15;
     const s = Math.min(this.w, this.h) / 90;
     return {
       x,
@@ -307,10 +334,9 @@ class Confetti {
       spin: (Math.random() - 0.5) * 12,
       flip: Math.random() * Math.PI * 2,
       flipSpeed: 6 + Math.random() * 8,
-      w: (ribbon ? 0.5 : 1) * s * (0.8 + Math.random() * 0.6),
-      h: (ribbon ? 3.2 : 0.6) * s * (0.8 + Math.random() * 0.6),
+      r: s * (0.8 + Math.random() * 0.6),
       color: this.colors[Math.floor(Math.random() * this.colors.length)],
-      ribbon,
+      shape: Math.floor(Math.random() * 4),
     };
   }
 
@@ -330,7 +356,7 @@ class Confetti {
     const step = Math.min(dt, 1 / 30);
     // Keep a gentle fall going for a few seconds after the burst.
     if (t > 0.6 && t < 4.5) {
-      this.drizzle += step * 40 * this.amount;
+      this.drizzle += step * 40;
       while (this.drizzle >= 1) {
         this.drizzle--;
         this.pieces.push(this.piece(Math.random() * this.w, -20, (Math.random() - 0.5) * 40, 40 + Math.random() * 60));
@@ -358,7 +384,7 @@ class Confetti {
       ctx.scale(1, Math.cos(p.flip)); // tumbling: the paper turns edge-on and back
       ctx.fillStyle = p.color;
       ctx.globalAlpha = Math.cos(p.flip) > 0 ? 1 : 0.75; // the back side catches less light
-      ctx.fillRect(-p.w / 2, -p.h / 2, p.w, p.h);
+      drawMemphis(ctx, p);
       ctx.restore();
     }
     this.pieces.length = alive;
@@ -367,5 +393,34 @@ class Confetti {
   clear(): void {
     this.ctx.setTransform(1, 0, 0, 1, 0, 0);
     this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+  }
+}
+
+function drawMemphis(ctx: CanvasRenderingContext2D, p: Piece): void {
+  const r = p.r;
+  ctx.strokeStyle = p.color;
+  ctx.lineWidth = Math.max(1.5, r * 0.32);
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  switch (p.shape) {
+    case 0:
+      ctx.moveTo(0, -r);
+      ctx.lineTo(r * 0.87, r * 0.5);
+      ctx.lineTo(-r * 0.87, r * 0.5);
+      ctx.closePath();
+      ctx.fill();
+      break;
+    case 1:
+      ctx.arc(0, 0, r * 0.7, 0, Math.PI * 2);
+      ctx.stroke();
+      break;
+    case 2:
+      ctx.moveTo(-r * 1.4, 0);
+      for (let i = 1; i <= 4; i++) ctx.lineTo(-r * 1.4 + i * r * 0.7, i % 2 ? -r * 0.45 : r * 0.45);
+      ctx.stroke();
+      break;
+    default:
+      ctx.fillRect(-r * 0.6, -r * 0.6, r * 1.2, r * 1.2);
   }
 }

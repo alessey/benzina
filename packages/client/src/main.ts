@@ -14,7 +14,7 @@ import { AudioEngine, type CarSound } from './audio';
 import { LapTimer } from './lapTimer';
 import { Connection } from './net/connection';
 import { RaceUi } from './raceUi';
-import { Celebration } from './celebration';
+import { Celebration, type FinishInfo } from './celebration';
 import { getTrack, OfflineSession, OnlineSession, type Session } from './session';
 import { showStartScreen, type StartChoice } from './startScreen';
 import { saveCar, savedCar } from './carPicker';
@@ -221,13 +221,20 @@ async function invite(): Promise<void> {
 }
 
 const celebration = new Celebration();
+function celebrate(info: FinishInfo): void {
+  audio.fanfare(info.position);
+  celebration.start(info);
+}
 if (import.meta.env.DEV) {
   // Try the finish celebration from the console: __celebrate(1)
   Object.assign(window, {
-    __celebrate: (position = 1) => {
-      audio.fanfare(position);
-      celebration.start({ position, racers: 6, finishTime: 154.321, gap: position > 1 ? 1.234 * position : null, carColor: 0x2a7fff });
-    },
+    __celebrate: (position = 1) => celebrate({
+      position,
+      racers: 6,
+      finishTime: 154.321,
+      gap: position > 1 ? 1.234 * position : null,
+      carColor: 0x2a7fff,
+    }),
   });
 }
 const raceUi = new RaceUi({
@@ -351,9 +358,8 @@ function soundCues(): void {
   if (me && race.phase === 'racing') {
     if (lastLaps >= 0 && me.lapsDone > lastLaps && me.finishTime === null) audio.chime(3);
     if (me.finishTime !== null && !lastFinished) {
-      audio.fanfare(me.position);
       const winner = race.standings.find((s) => s.position === 1);
-      celebration.start({
+      celebrate({
         position: me.position,
         racers: race.standings.length,
         finishTime: me.finishTime,

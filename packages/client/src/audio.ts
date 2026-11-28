@@ -294,63 +294,103 @@ export class AudioEngine {
   }
 
   /**
-   * Brassy fanfare for crossing the line: a full "ta-ta-ta-taaa" with a cymbal for a win, a
-   * shorter flourish for the podium, the finish chime otherwise.
+   * 80s synthwave fanfare for crossing the line: a square-wave arpeggio with echo over a
+   * pulsing saw bass, gated-reverb snares, and a big detuned pad on the last chord. Longer
+   * for a win; 3rd ends on a minor chord, and off the podium it's one bar.
    */
   fanfare(position: number): void {
     const ctx = this.ctx;
     if (!ctx || !this.master || !this.noise) return;
-    if (position > 3) {
-      this.chime(5);
-      return;
-    }
-    const n = (semi: number) => 392 * 2 ** (semi / 12); // semitones from G4
-    // [start beat, length in beats, semitones of each note in the chord]
-    const win: [number, number, number[]][] = [
-      [0, 0.5, [0, 4]], [0.5, 0.5, [0, 4]], [1, 0.5, [0, 4]], [1.5, 2.5, [5, 9, 12]],
-      [4, 0.5, [2, 7]], [4.5, 0.5, [4, 9]], [5, 4, [5, 9, 12, 17]],
-    ];
-    const podium: [number, number, number[]][] = [
-      [0, 0.5, [0, 4]], [0.5, 0.5, [2, 7]], [1, 3, position === 2 ? [5, 9, 12] : [4, 7, 12]],
-    ];
-    const beat = 0.15;
+    const sixteenth = 0.095;
     const t0 = ctx.currentTime + 0.05;
-    const out = new GainNode(ctx, { gain: position === 1 ? 0.12 : 0.09 });
+    const hz = (midi: number) => 440 * 2 ** ((midi - 69) / 12);
+    // Chords as MIDI notes (root position, octave 4): Am, F, G, C.
+    const AM = [57, 60, 64, 69];
+    const F = [53, 57, 60, 65];
+    const G = [55, 59, 62, 67];
+    const C = [60, 64, 67, 72];
+    // Each chord gets 8 sixteenths of arpeggio; then the final chord rings out.
+    const progression = position === 1 ? [AM, F, G, G] : position <= 3 ? [F, G] : [AM];
+    const final = position === 3 ? AM : C;
+
+    const out = new GainNode(ctx, { gain: 0.11 });
     out.connect(this.master);
-    for (const [start, len, chord] of position === 1 ? win : podium) {
-      const t = t0 + start * beat;
-      const dur = len * beat;
-      for (const semi of chord) {
-        // Two detuned saws through a filter that opens on the attack: a cheap brass section.
-        const filter = new BiquadFilterNode(ctx, { type: 'lowpass', Q: 2, frequency: 600 });
-        filter.frequency.setValueAtTime(600, t);
-        filter.frequency.linearRampToValueAtTime(3200, t + 0.04);
-        filter.frequency.exponentialRampToValueAtTime(1400, t + Math.max(0.08, dur));
-        const g = new GainNode(ctx, { gain: 0 });
-        g.gain.setValueAtTime(0, t);
-        g.gain.linearRampToValueAtTime(1 / chord.length + 0.2, t + 0.02);
-        g.gain.setValueAtTime(1 / chord.length + 0.2, t + dur * 0.8);
-        g.gain.linearRampToValueAtTime(0, t + dur + 0.12);
-        filter.connect(g).connect(out);
-        for (const detune of [-7, 7]) {
-          const osc = new OscillatorNode(ctx, { type: 'sawtooth', frequency: n(semi), detune });
-          osc.connect(filter);
-          osc.start(t);
-          osc.stop(t + dur + 0.2);
-        }
+    // Dotted-eighth echo on the lead, the 80s way.
+    const echo = new DelayNode(ctx, { delayTime: sixteenth * 3 });
+    const feedback = new GainNode(ctx, { gain: 0.38 });
+    const wet = new GainNode(ctx, { gain: 0.45 });
+    echo.connect(feedback).connect(echo);
+    echo.connect(wet).connect(out);
+
+    const voice = (type: OscillatorType, freq: number, t: number, dur: number, vol: number, cutoff: number, dest: AudioNode[]) => {
+      const osc = new OscillatorNode(ctx, { type, frequency: freq });
+      const f = new BiquadFilterNode(ctx, { type: 'lowpass', frequency: cutoff, Q: 3 });
+      const g = new GainNode(ctx, { gain: 0 });
+      g.gain.setValueAtTime(0, t);
+      g.gain.linearRampToValueAtTime(vol, t + 0.008);
+      g.gain.exponentialRampToValueAtTime(Math.max(0.001, vol * 0.4), t + dur);
+      g.gain.linearRampToValueAtTime(0, t + dur + 0.03);
+      osc.connect(f).connect(g);
+      for (const d of dest) g.connect(d);
+      osc.start(t);
+      osc.stop(t + dur + 0.05);
+    };
+    const snare = (t: number, big = false) => {
+      // Gated reverb: a burst of bright noise held, then cut dead.
+      const len = big ? 0.32 : 0.16;
+      const src = new AudioBufferSourceNode(ctx, { buffer: this.noise!, loop: true });
+      const g = new GainNode(ctx, { gain: 0 });
+      g.gain.setValueAtTime(0, t);
+      g.gain.linearRampToValueAtTime(big ? 0.5 : 0.35, t + 0.005);
+      g.gain.linearRampToValueAtTime(big ? 0.28 : 0.2, t + len);
+      g.gain.linearRampToValueAtTime(0, t + len + 0.01);
+      src.connect(new BiquadFilterNode(ctx, { type: 'bandpass', frequency: 1900, Q: 0.7 })).connect(g).connect(this.master!);
+      src.start(t, Math.random() * 0.5);
+      src.stop(t + len + 0.05);
+      const body = new OscillatorNode(ctx, { type: 'triangle', frequency: 190 });
+      const bg = new GainNode(ctx, { gain: 0.35 });
+      bg.gain.exponentialRampToValueAtTime(0.001, t + 0.1);
+      body.frequency.exponentialRampToValueAtTime(120, t + 0.1);
+      body.connect(bg).connect(this.master!);
+      body.start(t);
+      body.stop(t + 0.12);
+    };
+
+    let step = 0;
+    for (const chord of progression) {
+      for (let i = 0; i < 8; i++, step++) {
+        const t = t0 + step * sixteenth;
+        // Up the chord and up an octave: 1 2 3 4 5 4 3 2 shape.
+        const pattern = [0, 1, 2, 3, 2 + 4, 3, 2, 1];
+        const k = pattern[i];
+        const note = k >= 4 ? chord[k - 4] + 12 : chord[k];
+        voice('square', hz(note + 12), t, sixteenth * 0.9, 0.28, 3000, [out, echo]);
+        if (i % 2 === 0) voice('sawtooth', hz(chord[0] - 24), t, sixteenth * 1.8, 0.5, 500, [out]);
+        if (step % 8 === 4) snare(t);
       }
     }
-    // Cymbal crash on the big notes.
-    const crashes = position === 1 ? [1.5, 5] : [1];
-    for (const beatAt of crashes) {
-      const t = t0 + beatAt * beat;
-      const src = new AudioBufferSourceNode(ctx, { buffer: this.noise, loop: true });
-      const g = new GainNode(ctx, { gain: 0.18 });
-      g.gain.setValueAtTime(0.18, t);
-      g.gain.exponentialRampToValueAtTime(0.001, t + 1.4);
-      src.connect(new BiquadFilterNode(ctx, { type: 'highpass', frequency: 5000 })).connect(g).connect(this.master);
-      src.start(t, Math.random() * 0.3);
-      src.stop(t + 1.5);
+    // The last chord: a wide pad, a bass note and one big snare.
+    const t = t0 + step * sixteenth;
+    const hold = position === 1 ? 2.2 : 1.5;
+    snare(t, true);
+    voice('sawtooth', hz(final[0] - 24), t, hold, 0.55, 400, [out]);
+    for (const note of final) {
+      for (const detune of [-14, 0, 14]) {
+        const osc = new OscillatorNode(ctx, { type: 'sawtooth', frequency: hz(note), detune });
+        const f = new BiquadFilterNode(ctx, { type: 'lowpass', frequency: 800, Q: 1 });
+        f.frequency.setValueAtTime(800, t);
+        f.frequency.linearRampToValueAtTime(3500, t + 0.3);
+        f.frequency.exponentialRampToValueAtTime(900, t + hold);
+        const g = new GainNode(ctx, { gain: 0 });
+        g.gain.setValueAtTime(0, t);
+        g.gain.linearRampToValueAtTime(0.09, t + 0.03);
+        g.gain.setValueAtTime(0.09, t + hold * 0.6);
+        g.gain.linearRampToValueAtTime(0, t + hold);
+        osc.connect(f).connect(g).connect(out);
+        g.connect(echo);
+        osc.start(t);
+        osc.stop(t + hold + 0.05);
+      }
     }
   }
 
